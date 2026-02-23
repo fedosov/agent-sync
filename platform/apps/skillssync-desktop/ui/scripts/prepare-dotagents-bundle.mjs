@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const DOTAGENTS_VERSION = "0.10.0";
 const NODE_VERSION = "22.22.0";
+const PREPARE_MODES = new Set(["all", "bundle", "dev"]);
+const SLEEP_ARRAY = new Int32Array(new SharedArrayBuffer(4));
 
 const TARGETS = {
   "darwin-arm64": {
@@ -86,6 +88,37 @@ function detectHostTarget() {
   );
 }
 
+function parsePrepareMode(argv) {
+  let mode = "all";
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--mode") {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(
+          "Missing value for --mode. Expected one of: all, bundle, dev",
+        );
+      }
+      mode = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--mode=")) {
+      mode = arg.slice("--mode=".length);
+    }
+  }
+
+  if (!PREPARE_MODES.has(mode)) {
+    throw new Error(
+      `Unsupported --mode value "${mode}". Expected one of: all, bundle, dev`,
+    );
+  }
+
+  return mode;
+}
+
 function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
@@ -144,7 +177,26 @@ function resolveDotagentsCliRelativePath(baseDir) {
 }
 
 function removeDirectoryIfExists(dirPath) {
-  fs.rmSync(dirPath, { recursive: true, force: true });
+  const maxAttempts = 12;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.rmSync(dirPath, {
+        recursive: true,
+        force: true,
+        maxRetries: 8,
+        retryDelay: 80,
+      });
+      return;
+    } catch (error) {
+      const code = typeof error?.code === "string" ? error.code : "";
+      const retryable =
+        code === "ENOTEMPTY" || code === "EBUSY" || code === "EPERM";
+      if (!retryable || attempt === maxAttempts) {
+        throw error;
+      }
+      Atomics.wait(SLEEP_ARRAY, 0, 0, attempt * 100);
+    }
+  }
 }
 
 function installRuntimeDependencies(cacheInstallDir, target) {
@@ -404,6 +456,7 @@ function materializeRuntimeRoot(
 }
 
 function main() {
+  const mode = parsePrepareMode(process.argv.slice(2));
   const hostTarget = detectHostTarget();
   const cacheInstallDir = path.join(
     CACHE_ROOT,
@@ -416,26 +469,36 @@ function main() {
     hostTarget,
   );
 
-  const tauriBundleResult = materializeRuntimeRoot(
-    TAURI_BUNDLE_ROOT,
-    hostTarget,
-    cacheInstallDir,
-    nodeBinaryRelativePath,
-    dotagentsCliRelativePath,
-  );
-  const devRuntimeResult = materializeRuntimeRoot(
-    DEV_RUNTIME_ROOT,
-    hostTarget,
-    cacheInstallDir,
-    nodeBinaryRelativePath,
-    dotagentsCliRelativePath,
-  );
+  const preparedLaunchers = [];
+
+  if (mode === "all" || mode === "bundle") {
+    const tauriBundleResult = materializeRuntimeRoot(
+      TAURI_BUNDLE_ROOT,
+      hostTarget,
+      cacheInstallDir,
+      nodeBinaryRelativePath,
+      dotagentsCliRelativePath,
+    );
+    preparedLaunchers.push(tauriBundleResult.launcherPath);
+  }
+
+  if (mode === "all" || mode === "dev") {
+    const devRuntimeResult = materializeRuntimeRoot(
+      DEV_RUNTIME_ROOT,
+      hostTarget,
+      cacheInstallDir,
+      nodeBinaryRelativePath,
+      dotagentsCliRelativePath,
+    );
+    preparedLaunchers.push(devRuntimeResult.launcherPath);
+  }
 
   console.log(
-    `[dotagents] Prepared bundled runtime for ${hostTarget}:`,
-    `\n  - ${tauriBundleResult.launcherPath}`,
-    `\n  - ${devRuntimeResult.launcherPath}`,
+    `[dotagents] Prepared bundled runtime for ${hostTarget} (mode=${mode}):`,
   );
+  for (const launcherPath of preparedLaunchers) {
+    console.log(`  - ${launcherPath}`);
+  }
 }
 
 main();
