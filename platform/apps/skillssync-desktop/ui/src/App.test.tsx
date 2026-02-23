@@ -1058,7 +1058,7 @@ describe("App quiet redesign", () => {
     );
 
     await waitFor(() => {
-      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("user");
+      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("all");
     });
     const proof = await screen.findByTestId("dotagents-proof");
     expect(proof).toHaveAttribute("data-status", "ok");
@@ -1106,7 +1106,7 @@ describe("App quiet redesign", () => {
     );
 
     await waitFor(() => {
-      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("project");
+      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("all");
     });
     const proof = await screen.findByTestId("dotagents-proof");
     expect(proof).toHaveAttribute("data-status", "ok");
@@ -1145,10 +1145,8 @@ describe("App quiet redesign", () => {
 
     const proof = await screen.findByTestId("dotagents-proof");
     expect(proof).toHaveAttribute("data-status", "error");
-    expect(proof).toHaveTextContent("Run Verify dotagents.");
-    expect(proof).toHaveTextContent(
-      "skillssync migrate-dotagents --scope user",
-    );
+    expect(proof).toHaveTextContent("Dotagents initialization failed");
+    expect(proof).toHaveTextContent("agents.toml already exists");
   });
 
   it("opens audit log panel and renders events", async () => {
