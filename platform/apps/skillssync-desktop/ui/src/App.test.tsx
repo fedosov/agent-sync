@@ -1058,11 +1058,97 @@ describe("App quiet redesign", () => {
     );
 
     await waitFor(() => {
-      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("all");
+      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("user");
     });
     const proof = await screen.findByTestId("dotagents-proof");
     expect(proof).toHaveAttribute("data-status", "ok");
     expect(proof).toHaveTextContent("skills=1, mcp=0");
+  });
+
+  it("infers project scope for dotagents initialization after migration-required error", async () => {
+    const state = buildState([projectSkill], []);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.runDotagentsSync)
+      .mockRejectedValueOnce(
+        new Error(
+          "migration required before strict dotagents sync: project scope is not initialized for 1 workspace(s): /tmp/workspace-a; run `skillssync migrate-dotagents --scope project`",
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(tauriApi.listDotagentsSkills).mockResolvedValue([
+      {
+        ...projectSkill,
+      },
+    ]);
+    vi.mocked(tauriApi.listDotagentsMcp).mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(
+      screen.getByRole("switch", { name: "Allow filesystem changes" }),
+    );
+    await waitFor(() => {
+      expect(tauriApi.setAllowFilesystemChanges).toHaveBeenCalledWith(true);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Verify dotagents" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Initialize dotagents" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Initialize dotagents" }),
+    );
+
+    await waitFor(() => {
+      expect(tauriApi.migrateDotagents).toHaveBeenCalledWith("project");
+    });
+    const proof = await screen.findByTestId("dotagents-proof");
+    expect(proof).toHaveAttribute("data-status", "ok");
+    expect(proof).toHaveTextContent("skills=1, mcp=0");
+  });
+
+  it("shows guidance when dotagents init fails because agents.toml already exists", async () => {
+    const state = buildState([projectSkill], []);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.runDotagentsSync).mockRejectedValueOnce(
+      new Error(
+        "migration required before strict dotagents sync: user scope is not initialized",
+      ),
+    );
+    vi.mocked(tauriApi.migrateDotagents).mockRejectedValueOnce(
+      new Error("agents.toml already exists. Use --force to overwrite."),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(
+      screen.getByRole("switch", { name: "Allow filesystem changes" }),
+    );
+    await waitFor(() => {
+      expect(tauriApi.setAllowFilesystemChanges).toHaveBeenCalledWith(true);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Verify dotagents" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Initialize dotagents" }),
+    );
+
+    const proof = await screen.findByTestId("dotagents-proof");
+    expect(proof).toHaveAttribute("data-status", "error");
+    expect(proof).toHaveTextContent("Run Verify dotagents.");
+    expect(proof).toHaveTextContent(
+      "skillssync migrate-dotagents --scope user",
+    );
   });
 
   it("opens audit log panel and renders events", async () => {

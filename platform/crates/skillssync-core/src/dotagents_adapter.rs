@@ -120,6 +120,14 @@ impl DotagentsAdapter {
             return Ok(DotagentsCommandOutput { stdout, stderr });
         }
 
+        if is_dotagents_init_already_exists_failure(args, &stderr, &stdout) {
+            let scope = if user_scope { "user" } else { "project" };
+            return Err(SyncEngineError::DotagentsInitAlreadyExists {
+                scope: scope.to_string(),
+                cwd: cwd.to_path_buf(),
+            });
+        }
+
         Err(SyncEngineError::DotagentsCommandFailed {
             command: rendered_command.join(" "),
             exit_code: output.status.code(),
@@ -127,6 +135,17 @@ impl DotagentsAdapter {
             stdout,
         })
     }
+}
+
+fn is_dotagents_init_already_exists_failure(args: &[&str], stderr: &str, stdout: &str) -> bool {
+    if !matches!(args.first(), Some(command) if command.eq_ignore_ascii_case("init")) {
+        return false;
+    }
+
+    let stderr_lower = stderr.to_ascii_lowercase();
+    let stdout_lower = stdout.to_ascii_lowercase();
+    stderr_lower.contains("agents.toml already exists")
+        || stdout_lower.contains("agents.toml already exists")
 }
 
 #[cfg(any(windows, test))]
@@ -142,6 +161,7 @@ fn is_windows_shell_script(binary_path: &Path) -> bool {
 mod tests {
     use super::{is_windows_shell_script, DotagentsAdapter};
     use crate::dotagents_runtime::DotagentsRuntimeManager;
+    use crate::error::SyncEngineError;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -230,5 +250,49 @@ exit 12
 
         assert!(message.contains("dotagents command failed"));
         assert!(message.contains("sync failed"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_maps_init_already_exists_to_typed_error() {
+        let temp = TempDir::new().expect("tempdir");
+        let script_path = temp.path().join("dotagents");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "dotagents 0.10.0"
+  exit 0
+fi
+if [ "$1" = "--user" ]; then
+  shift
+fi
+if [ "$1" = "init" ]; then
+  echo "agents.toml already exists. Use --force to overwrite." >&2
+  exit 1
+fi
+echo "unexpected args: $*" >&2
+exit 9
+"#,
+        )
+        .expect("write script");
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+
+        let runtime = DotagentsRuntimeManager::new(temp.path().to_path_buf())
+            .with_override_binary(script_path);
+        let adapter = DotagentsAdapter::new(runtime);
+        let error = adapter
+            .run(&["init"], temp.path(), true)
+            .expect_err("command should fail");
+
+        match error {
+            SyncEngineError::DotagentsInitAlreadyExists { scope, cwd } => {
+                assert_eq!(scope, "user");
+                assert_eq!(cwd, temp.path().to_path_buf());
+            }
+            other => panic!("expected DotagentsInitAlreadyExists, got {other:?}"),
+        }
     }
 }

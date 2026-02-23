@@ -107,6 +107,11 @@ pub enum SyncEngineError {
         stdout: String,
     },
 
+    #[error(
+        "dotagents init already has agents.toml for {scope} scope at {cwd}; run Verify dotagents or `skillssync migrate-dotagents --scope {scope}`"
+    )]
+    DotagentsInitAlreadyExists { scope: String, cwd: PathBuf },
+
     #[error("strict contract missing: {0}")]
     StrictContractMissing(String),
 
