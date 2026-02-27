@@ -129,8 +129,8 @@ Chosen decisions:
 
 ### Task 5: Update docs/spec/contracts for new command/name
 
-- [ ] Update platform/spec/cli-contract.json CLI command name and examples
-- [ ] Verify platform/spec/state.schema.json $id is unchanged (keep skillssync.dev)
+- [x] Update platform/spec/cli-contract.json CLI command name and examples
+- [x] Verify platform/spec/state.schema.json $id is unchanged (keep skillssync.dev)
 
 ### Task 6: GitHub rename and local remote sync
 
