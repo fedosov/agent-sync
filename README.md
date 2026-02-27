@@ -1,5 +1,5 @@
 ## What is this project?
-SkillsSync is a desktop app and CLI built on [Sentry dotagents](https://github.com/getsentry/dotagents) that keeps one canonical catalog of skills, subagents, and managed MCP servers synchronized across agent runtimes, and it is in active alpha development with daily real-world use by the developer.
+Agent Sync is a desktop app and CLI built on [Sentry dotagents](https://github.com/getsentry/dotagents) that keeps one canonical catalog of skills, subagents, and managed MCP servers synchronized across agent runtimes, and it is in active alpha development with daily real-world use by the developer.
 
 ## What problems does it solve?
 It stops configuration drift when the same assets live across Claude, Cursor, Codex, and shared agent directories.
@@ -17,17 +17,17 @@ GUI:
 ```
 CLI:
 ```bash
-cd platform && cargo run -p skillssync-cli -- sync --scope all --json
+cd platform && cargo run -p agent-sync-cli -- sync --scope all --json
 ```
 
 ### Windows (PowerShell)
 GUI:
 ```powershell
-cd platform/apps/skillssync-desktop/ui; npm install; cd ../src-tauri; cargo tauri dev
+cd platform/apps/agent-sync-desktop/ui; npm install; cd ../src-tauri; cargo tauri dev
 ```
 CLI:
 ```powershell
-cd platform; cargo run -p skillssync-cli -- sync --scope all --json
+cd platform; cargo run -p agent-sync-cli -- sync --scope all --json
 ```
 
 ### Linux
@@ -37,7 +37,7 @@ GUI:
 ```
 CLI:
 ```bash
-cd platform && cargo run -p skillssync-cli -- sync --scope all --json
+cd platform && cargo run -p agent-sync-cli -- sync --scope all --json
 ```
 
 Details: [docs/SETUP.md](docs/SETUP.md)

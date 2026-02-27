@@ -11,7 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-skillssync-core = { path = "../../../crates/skillssync-core" }
+skillssync-core = { path = "../../../crates/agent-sync-core" }
 tauri = { version = "2", features = [] }
 
 [dev-dependencies]

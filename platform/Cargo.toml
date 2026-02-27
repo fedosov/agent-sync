@@ -1,8 +1,8 @@
 [workspace]
 members = [
-  "crates/skillssync-core",
-  "crates/skillssync-cli",
-  "apps/skillssync-desktop/src-tauri",
+  "crates/agent-sync-core",
+  "crates/agent-sync-cli",
+  "apps/agent-sync-desktop/src-tauri",
 ]
 resolver = "2"
 

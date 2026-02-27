@@ -2,9 +2,9 @@ SHELL := /bin/bash
 
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PLATFORM_DIR := $(ROOT_DIR)/platform
-APP_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop
-UI_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop/ui
-TAURI_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop/src-tauri
+APP_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop
+UI_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop/ui
+TAURI_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop/src-tauri
 
 .PHONY: all build run app lint lint-fix prepare-dotagents-runtime lint-rust lint-fix-rust lint-ui lint-fix-ui lint-workflows test test-rust typecheck-ts check-rust hooks-install release
 

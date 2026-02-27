@@ -6,5 +6,5 @@ if [[ ! "$FILE_PATH" =~ \.(ts|tsx)$ ]]; then
   exit 0
 fi
 
-cd "${CLAUDE_PROJECT_DIR:-.}/platform/apps/skillssync-desktop/ui" || exit 0
+cd "${CLAUDE_PROJECT_DIR:-.}/platform/apps/agent-sync-desktop/ui" || exit 0
 npx tsc --noEmit 2>&1 | tail -20
