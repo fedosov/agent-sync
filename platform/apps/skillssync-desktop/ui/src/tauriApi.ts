@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentsContextReport,
   AuditEvent,
   AuditQuery,
   DashboardSnapshot,
@@ -17,6 +18,10 @@ import type {
 
 export async function getState(): Promise<SyncState> {
   return invoke<SyncState>("get_state");
+}
+
+export async function getAgentsContextReport(): Promise<AgentsContextReport> {
+  return invoke<AgentsContextReport>("get_agents_context_report");
 }
 
 export async function getStarredSkillIds(): Promise<string[]> {

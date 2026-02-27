@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import * as tauriApi from "./tauriApi";
 import type {
+  AgentsContextReport,
   McpServerRecord,
   SkillDetails,
   SkillRecord,
@@ -15,6 +16,7 @@ vi.mock("./tauriApi", () => ({
   setAllowFilesystemChanges: vi.fn(),
   listAuditEvents: vi.fn(),
   clearAuditEvents: vi.fn(),
+  getAgentsContextReport: vi.fn(),
   getState: vi.fn(),
   runSync: vi.fn(),
   runDotagentsSync: vi.fn(),
@@ -132,6 +134,72 @@ function buildDetails(
   };
 }
 
+function buildAgentsReport(
+  overrides?: Partial<AgentsContextReport>,
+): AgentsContextReport {
+  return {
+    generated_at: "2026-02-23T18:00:00Z",
+    limits: {
+      include_max_depth: 5,
+      file_warning_tokens: 2000,
+      file_critical_tokens: 4000,
+      total_warning_tokens: 8000,
+      total_critical_tokens: 16000,
+      tokens_formula: "ceil(rendered_chars / 4)",
+    },
+    totals: {
+      roots_count: 1,
+      rendered_chars: 3200,
+      rendered_lines: 120,
+      tokens_estimate: 800,
+      include_count: 2,
+      missing_include_count: 0,
+      cycle_count: 0,
+      max_depth_reached_count: 0,
+      severity: "ok",
+    },
+    warning_count: 0,
+    critical_count: 0,
+    entries: [
+      {
+        id: "global|global|/tmp/home/AGENTS.md",
+        scope: "global",
+        workspace: null,
+        root_path: "/tmp/home/AGENTS.md",
+        exists: true,
+        severity: "ok",
+        raw_chars: 1200,
+        raw_lines: 40,
+        rendered_chars: 3200,
+        rendered_lines: 120,
+        tokens_estimate: 800,
+        include_count: 2,
+        missing_includes: [],
+        cycles_detected: [],
+        max_depth_reached: false,
+        diagnostics: [],
+        segments: [
+          {
+            path: "/tmp/home/AGENTS.md",
+            depth: 0,
+            chars: 1200,
+            lines: 40,
+            tokens_estimate: 300,
+          },
+          {
+            path: "/tmp/home/shared/policy.md",
+            depth: 1,
+            chars: 2000,
+            lines: 80,
+            tokens_estimate: 500,
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function setApiDefaults(
   state: SyncState,
   detailsBySkillKey: Record<string, SkillDetails>,
@@ -147,6 +215,9 @@ function setApiDefaults(
   });
   vi.mocked(tauriApi.listAuditEvents).mockResolvedValue([]);
   vi.mocked(tauriApi.clearAuditEvents).mockResolvedValue(undefined);
+  vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+    buildAgentsReport(),
+  );
   vi.mocked(tauriApi.getStarredSkillIds).mockResolvedValue([]);
   vi.mocked(tauriApi.listSubagents).mockResolvedValue([
     {
@@ -197,7 +268,9 @@ function setApiDefaults(
   vi.mocked(tauriApi.runSync).mockResolvedValue(state);
   vi.mocked(tauriApi.runDotagentsSync).mockResolvedValue(undefined);
   vi.mocked(tauriApi.listDotagentsSkills).mockResolvedValue(state.skills);
-  vi.mocked(tauriApi.listDotagentsMcp).mockResolvedValue(state.mcp_servers);
+  vi.mocked(tauriApi.listDotagentsMcp).mockResolvedValue(
+    state.mcp_servers ?? [],
+  );
   vi.mocked(tauriApi.migrateDotagents).mockResolvedValue(undefined);
   vi.mocked(tauriApi.mutateSkill).mockResolvedValue(state);
   vi.mocked(tauriApi.renameSkill).mockResolvedValue(state);
@@ -265,6 +338,9 @@ describe("App quiet redesign", () => {
     ).toHaveAttribute("aria-pressed", "false");
     expect(
       screen.getByRole("button", { name: "Switch catalog to MCP" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
     ).toHaveAttribute("aria-pressed", "false");
 
     expect(
@@ -392,6 +468,212 @@ describe("App quiet redesign", () => {
     expect(
       screen.getByRole("button", { name: /Agent Search/i }),
     ).toBeInTheDocument();
+  });
+
+  it("switches to Agents.md tab and renders agents details", async () => {
+    const state = buildState([projectSkill]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+      buildAgentsReport({
+        entries: [
+          {
+            id: "global|global|/tmp/home/AGENTS.md",
+            scope: "global",
+            workspace: null,
+            root_path: "/tmp/home/AGENTS.md",
+            exists: true,
+            severity: "ok",
+            raw_chars: 1200,
+            raw_lines: 40,
+            rendered_chars: 3200,
+            rendered_lines: 120,
+            tokens_estimate: 800,
+            include_count: 2,
+            missing_includes: [],
+            cycles_detected: [],
+            max_depth_reached: false,
+            diagnostics: [],
+            segments: [
+              {
+                path: "/tmp/home/AGENTS.md",
+                depth: 0,
+                chars: 1200,
+                lines: 40,
+                tokens_estimate: 300,
+              },
+            ],
+          },
+          {
+            id: "project|/tmp/workspace|/tmp/workspace/AGENTS.md",
+            scope: "project",
+            workspace: "/tmp/workspace",
+            root_path: "/tmp/workspace/AGENTS.md",
+            exists: true,
+            severity: "warning",
+            raw_chars: 5000,
+            raw_lines: 140,
+            rendered_chars: 8800,
+            rendered_lines: 220,
+            tokens_estimate: 2200,
+            include_count: 4,
+            missing_includes: ["missing include"],
+            cycles_detected: [],
+            max_depth_reached: false,
+            diagnostics: ["missing include"],
+            segments: [
+              {
+                path: "/tmp/workspace/AGENTS.md",
+                depth: 0,
+                chars: 5000,
+                lines: 140,
+                tokens_estimate: 1250,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      await screen.findByRole("heading", { name: "Global AGENTS.md" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Top segments")).toBeInTheDocument();
+    expect(screen.getAllByText("/tmp/home/AGENTS.md").length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it("shows agents header indicator with warning and critical counts", async () => {
+    const state = buildState([projectSkill]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+      buildAgentsReport({
+        warning_count: 2,
+        critical_count: 1,
+        totals: {
+          roots_count: 3,
+          rendered_chars: 36_000,
+          rendered_lines: 1200,
+          tokens_estimate: 9000,
+          include_count: 8,
+          missing_include_count: 2,
+          cycle_count: 1,
+          max_depth_reached_count: 1,
+          severity: "warning",
+        },
+      }),
+    );
+
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    const indicator = await screen.findByTestId("agents-context-indicator");
+    expect(indicator).toHaveTextContent("Agents context");
+    expect(indicator).toHaveTextContent("9000 est");
+    expect(indicator).toHaveTextContent("warnings 2 / critical 1");
+  });
+
+  it("filters agents entries by workspace/path/scope/severity", async () => {
+    const state = buildState([projectSkill]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+      buildAgentsReport({
+        entries: [
+          {
+            id: "global|global|/tmp/home/AGENTS.md",
+            scope: "global",
+            workspace: null,
+            root_path: "/tmp/home/AGENTS.md",
+            exists: true,
+            severity: "ok",
+            raw_chars: 100,
+            raw_lines: 4,
+            rendered_chars: 100,
+            rendered_lines: 4,
+            tokens_estimate: 25,
+            include_count: 0,
+            missing_includes: [],
+            cycles_detected: [],
+            max_depth_reached: false,
+            diagnostics: [],
+            segments: [],
+          },
+          {
+            id: "project|/tmp/workspace-a|/tmp/workspace-a/AGENTS.md",
+            scope: "project",
+            workspace: "/tmp/workspace-a",
+            root_path: "/tmp/workspace-a/AGENTS.md",
+            exists: true,
+            severity: "critical",
+            raw_chars: 20_000,
+            raw_lines: 450,
+            rendered_chars: 20_000,
+            rendered_lines: 450,
+            tokens_estimate: 5000,
+            include_count: 0,
+            missing_includes: [],
+            cycles_detected: [],
+            max_depth_reached: false,
+            diagnostics: [],
+            segments: [],
+          },
+        ],
+        warning_count: 0,
+        critical_count: 1,
+        totals: {
+          roots_count: 2,
+          rendered_chars: 20_100,
+          rendered_lines: 454,
+          tokens_estimate: 5025,
+          include_count: 0,
+          missing_include_count: 0,
+          cycle_count: 0,
+          max_depth_reached_count: 0,
+          severity: "ok",
+        },
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.type(
+      screen.getByPlaceholderText("Search by name, key, scope or workspace"),
+      "workspace-a",
+    );
+    expect(screen.getByText("No skills found.")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
+    );
+    expect(screen.getByText(/workspace-a/)).toBeInTheDocument();
+
+    await user.clear(
+      screen.getByPlaceholderText("Search by name, key, scope or workspace"),
+    );
+    await user.type(
+      screen.getByPlaceholderText("Search by name, key, scope or workspace"),
+      "critical",
+    );
+    expect(screen.getByText(/workspace-a/)).toBeInTheDocument();
   });
 
   it("persists selected tab and restores it after remount", async () => {
@@ -963,6 +1245,57 @@ describe("App quiet redesign", () => {
     await user.click(screen.getByRole("button", { name: "Sync" }));
     await waitFor(() => {
       expect(tauriApi.runSync).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("refreshes subagents and agents report after sync completes", async () => {
+    const state = buildState([projectSkill]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    const user = userEvent.setup();
+
+    let resolveRunSync: ((value: SyncState) => void) | null = null;
+    const runSyncPromise = new Promise<SyncState>((resolve) => {
+      resolveRunSync = resolve;
+    });
+    vi.mocked(tauriApi.runSync).mockReturnValue(runSyncPromise);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(
+      screen.getByRole("switch", { name: "Allow filesystem changes" }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Sync" })).toBeEnabled();
+    });
+
+    const subagentCallsBeforeSync = vi.mocked(tauriApi.listSubagents).mock.calls
+      .length;
+    const reportCallsBeforeSync = vi.mocked(tauriApi.getAgentsContextReport)
+      .mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "Sync" }));
+    await waitFor(() => {
+      expect(tauriApi.runSync).toHaveBeenCalledTimes(1);
+    });
+
+    expect(vi.mocked(tauriApi.listSubagents).mock.calls.length).toBe(
+      subagentCallsBeforeSync,
+    );
+    expect(vi.mocked(tauriApi.getAgentsContextReport).mock.calls.length).toBe(
+      reportCallsBeforeSync,
+    );
+
+    resolveRunSync?.(state);
+    await waitFor(() => {
+      expect(vi.mocked(tauriApi.listSubagents).mock.calls.length).toBe(
+        subagentCallsBeforeSync + 1,
+      );
+      expect(vi.mocked(tauriApi.getAgentsContextReport).mock.calls.length).toBe(
+        reportCallsBeforeSync + 1,
+      );
     });
   });
 

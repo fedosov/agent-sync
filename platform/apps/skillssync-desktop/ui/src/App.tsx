@@ -8,6 +8,7 @@ import { getVisibleMcpAgents } from "./lib/mcpAgents";
 import { cn } from "./lib/utils";
 import {
   clearAuditEvents,
+  getAgentsContextReport,
   listDotagentsMcp,
   listDotagentsSkills,
   getRuntimeControls,
@@ -33,8 +34,11 @@ import {
   sortAndFilterSkills,
 } from "./skillUtils";
 import type {
+  AgentContextSeverity,
+  AgentsContextReport,
   AuditEvent,
   AuditEventStatus,
+  FocusKind,
   McpServerRecord,
   MutationCommand,
   RuntimeControls,
@@ -45,7 +49,6 @@ import type {
   SyncState,
 } from "./types";
 
-type FocusKind = "skills" | "subagents" | "mcp";
 type DeleteDialogState = { skillKey: string; confirmText: string } | null;
 type OpenTargetMenu = "skill" | "subagent" | null;
 type AuditStatusFilter = AuditEventStatus | "all";
@@ -110,10 +113,32 @@ function parseAuditStatusFilter(value: string): AuditStatusFilter {
 }
 
 function parseFocusKind(value: string | null): FocusKind {
-  if (value === "skills" || value === "subagents" || value === "mcp") {
+  if (
+    value === "skills" ||
+    value === "subagents" ||
+    value === "mcp" ||
+    value === "agents"
+  ) {
     return value;
   }
   return "skills";
+}
+
+function severityRank(severity: AgentContextSeverity): number {
+  if (severity === "critical") return 2;
+  if (severity === "warning") return 1;
+  return 0;
+}
+
+function severityDotClass(severity: AgentContextSeverity): string {
+  return cn(
+    "inline-block h-2 w-2 rounded-full",
+    severity === "critical"
+      ? "bg-red-500"
+      : severity === "warning"
+        ? "bg-amber-500"
+        : "bg-emerald-500",
+  );
 }
 
 function readStoredFocusKind(): FocusKind {
@@ -142,6 +167,9 @@ export function App() {
     useState<RuntimeControls | null>(null);
   const [details, setDetails] = useState<SkillDetails | null>(null);
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
+  const [agentsReport, setAgentsReport] = useState<AgentsContextReport | null>(
+    null,
+  );
   const [subagentDetails, setSubagentDetails] =
     useState<SubagentDetails | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -160,6 +188,9 @@ export function App() {
     null,
   );
   const [selectedMcpKey, setSelectedMcpKey] = useState<string | null>(null);
+  const [selectedAgentEntryId, setSelectedAgentEntryId] = useState<
+    string | null
+  >(null);
   const [query, setQuery] = useState("");
   const [renameDraft, setRenameDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -184,22 +215,47 @@ export function App() {
     [],
   );
 
-  const applySubagents = useCallback(async (preferredKey?: string | null) => {
-    const nextSubagents = await listSubagents("all");
-    setSubagents(nextSubagents);
-    setSelectedSubagentId((prev) => {
-      if (
-        preferredKey &&
-        nextSubagents.some((item) => item.id === preferredKey)
-      ) {
-        return preferredKey;
-      }
-      if (prev && nextSubagents.some((item) => item.id === prev)) {
-        return prev;
-      }
-      return nextSubagents[0]?.id ?? null;
-    });
-  }, []);
+  const applySubagents = useCallback(
+    async (
+      preferredKey?: string | null,
+      preloadedSubagents?: SubagentRecord[],
+    ) => {
+      const nextSubagents = preloadedSubagents ?? (await listSubagents("all"));
+      setSubagents(nextSubagents);
+      setSelectedSubagentId((prev) => {
+        if (
+          preferredKey &&
+          nextSubagents.some((item) => item.id === preferredKey)
+        ) {
+          return preferredKey;
+        }
+        if (prev && nextSubagents.some((item) => item.id === prev)) {
+          return prev;
+        }
+        return nextSubagents[0]?.id ?? null;
+      });
+    },
+    [],
+  );
+
+  const applyAgentsReport = useCallback(
+    (nextReport: AgentsContextReport, preferredId?: string | null) => {
+      setAgentsReport(nextReport);
+      setSelectedAgentEntryId((prev) => {
+        if (
+          preferredId &&
+          nextReport.entries.some((item) => item.id === preferredId)
+        ) {
+          return preferredId;
+        }
+        if (prev && nextReport.entries.some((item) => item.id === prev)) {
+          return prev;
+        }
+        return nextReport.entries[0]?.id ?? null;
+      });
+    },
+    [],
+  );
 
   const refreshState = useCallback(
     async (
@@ -213,13 +269,24 @@ export function App() {
       setError(null);
       try {
         const next = syncFirst ? await runSync() : await getState();
-        await applySubagents(preferredKey);
+        const [nextSubagents, nextAgentsReport] = await Promise.all([
+          listSubagents("all"),
+          getAgentsContextReport(),
+        ]);
+        await applySubagents(preferredKey, nextSubagents);
+        applyAgentsReport(nextAgentsReport);
         applyState(next, preferredKey);
       } catch (invokeError) {
         setError(String(invokeError));
         try {
-          const fallbackState = await getState();
-          await applySubagents(preferredKey);
+          const [fallbackState, fallbackSubagents, fallbackAgentsReport] =
+            await Promise.all([
+              getState(),
+              listSubagents("all"),
+              getAgentsContextReport(),
+            ]);
+          await applySubagents(preferredKey, fallbackSubagents);
+          applyAgentsReport(fallbackAgentsReport);
           applyState(fallbackState, preferredKey);
         } catch (fallbackError) {
           setError(
@@ -232,7 +299,7 @@ export function App() {
         }
       }
     },
-    [applyState, applySubagents],
+    [applyAgentsReport, applyState, applySubagents],
   );
 
   const loadAudit = useCallback(async () => {
@@ -463,10 +530,50 @@ export function App() {
     });
   }, [focusKind, query, state]);
 
+  const filteredAgentEntries = useMemo(() => {
+    const normalizedQuery =
+      focusKind === "agents" ? query.trim().toLowerCase() : "";
+    const entries = (agentsReport?.entries ?? []).slice().sort((lhs, rhs) => {
+      return (
+        severityRank(rhs.severity) - severityRank(lhs.severity) ||
+        lhs.scope.localeCompare(rhs.scope) ||
+        (lhs.workspace ?? "").localeCompare(rhs.workspace ?? "") ||
+        lhs.root_path.localeCompare(rhs.root_path)
+      );
+    });
+    if (!normalizedQuery) {
+      return entries;
+    }
+    return entries.filter((entry) => {
+      return (
+        entry.root_path.toLowerCase().includes(normalizedQuery) ||
+        entry.scope.toLowerCase().includes(normalizedQuery) ||
+        (entry.workspace ?? "").toLowerCase().includes(normalizedQuery) ||
+        entry.severity.toLowerCase().includes(normalizedQuery)
+      );
+    });
+  }, [agentsReport, focusKind, query]);
+
   const selectedMcpServer =
     state?.mcp_servers?.find(
       (item) => mcpSelectionKey(item) === selectedMcpKey,
     ) ?? null;
+  const selectedAgentEntry =
+    agentsReport?.entries.find((item) => item.id === selectedAgentEntryId) ??
+    null;
+  const selectedAgentTopSegments = useMemo(() => {
+    if (!selectedAgentEntry) {
+      return [];
+    }
+    return selectedAgentEntry.segments
+      .slice()
+      .sort(
+        (lhs, rhs) =>
+          rhs.tokens_estimate - lhs.tokens_estimate ||
+          lhs.path.localeCompare(rhs.path),
+      )
+      .slice(0, 8);
+  }, [selectedAgentEntry]);
 
   async function executeMutation(command: MutationCommand, skillKey: string) {
     if (busy) {
@@ -698,34 +805,43 @@ export function App() {
     state?.skills.filter((skill) => skill.status === "archived").length ?? 0;
   const activeSubagentCount = subagents.length;
   const mcpCount = state?.summary.mcp_count ?? state?.mcp_servers?.length ?? 0;
+  const agentContextCount = agentsReport?.entries.length ?? 0;
   const catalogTabCounts = {
     skills: state?.skills.length ?? 0,
     subagents: subagents.length,
     mcp: mcpCount,
+    agents: agentContextCount,
   };
   const activeCatalogTitle =
     focusKind === "skills"
       ? "Skills"
       : focusKind === "subagents"
         ? "Subagents"
-        : "MCP";
+        : focusKind === "mcp"
+          ? "MCP"
+          : "Agents.md";
   const activeCatalogCount =
     focusKind === "skills"
       ? filteredSkills.length
       : focusKind === "subagents"
         ? filteredSubagents.length
-        : filteredMcpServers.length;
+        : focusKind === "mcp"
+          ? filteredMcpServers.length
+          : filteredAgentEntries.length;
   const activeCatalogTotal = catalogTabCounts[focusKind];
   const activeCatalogEmptyText =
     focusKind === "skills"
       ? "No skills found."
       : focusKind === "subagents"
         ? "No subagents found."
-        : "No MCP servers found.";
+        : focusKind === "mcp"
+          ? "No MCP servers found."
+          : "No AGENTS.md entries found.";
 
   const showSkill = focusKind === "skills" && details;
   const showSubagent = focusKind === "subagents" && subagentDetails;
   const showMcp = focusKind === "mcp" && selectedMcpServer;
+  const showAgents = focusKind === "agents" && selectedAgentEntry;
   const dotagentsIndicatorClass = cn(
     "inline-block h-2 w-2 rounded-full",
     dotagentsProofStatus === "ok"
@@ -736,6 +852,8 @@ export function App() {
           ? "bg-red-400"
           : "bg-muted-foreground/40",
   );
+  const agentsTotals = agentsReport?.totals;
+  const agentsIndicatorClass = severityDotClass(agentsTotals?.severity ?? "ok");
 
   return (
     <div className="min-h-full bg-background text-foreground lg:h-screen lg:overflow-hidden">
@@ -754,7 +872,8 @@ export function App() {
               <p className="text-xs text-muted-foreground">
                 Active {activeSkillCount} · Archived {archivedSkillCount} ·
                 Skills {state?.skills.length ?? 0} · Subagents{" "}
-                {activeSubagentCount} · MCP {mcpCount}
+                {activeSubagentCount} · MCP {mcpCount} · Agents{" "}
+                {agentContextCount}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -841,6 +960,21 @@ export function App() {
               <span>{dotagentsProofSummary}</span>
             </span>
           </p>
+          <p
+            className="mt-1 text-xs text-muted-foreground"
+            data-testid="agents-context-indicator"
+            aria-live="polite"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden="true" className={agentsIndicatorClass} />
+              <span className="font-medium">Agents context</span>
+              <span>
+                {agentsTotals
+                  ? `${agentsTotals.tokens_estimate} est · warnings ${agentsReport?.warning_count ?? 0} / critical ${agentsReport?.critical_count ?? 0}`
+                  : "loading..."}
+              </span>
+            </span>
+          </p>
           {dotagentsNeedsMigration ? (
             <div className="mt-1.5">
               <Button
@@ -891,6 +1025,7 @@ export function App() {
                     ["skills", "Skills"],
                     ["subagents", "Subagents"],
                     ["mcp", "MCP"],
+                    ["agents", "Agents.md"],
                   ] as const
                 ).map(([kind, label]) => {
                   const isActive = focusKind === kind;
@@ -1096,12 +1231,66 @@ export function App() {
                     </ul>
                   )
                 ) : null}
+
+                {focusKind === "agents" ? (
+                  filteredAgentEntries.length === 0 ? (
+                    <p className="rounded-md bg-muted/20 px-2 py-2 text-xs text-muted-foreground">
+                      {activeCatalogEmptyText}
+                    </p>
+                  ) : (
+                    <ul className="space-y-0.5">
+                      {filteredAgentEntries.map((entry) => {
+                        const selected = entry.id === selectedAgentEntryId;
+                        return (
+                          <li key={entry.id}>
+                            <button
+                              type="button"
+                              className={cn(
+                                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
+                                selected
+                                  ? "bg-accent/85 text-foreground"
+                                  : "hover:bg-accent/55",
+                              )}
+                              onClick={() => {
+                                setSelectedAgentEntryId(entry.id);
+                                setActionsMenuOpen(false);
+                                setOpenTargetMenu(null);
+                              }}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    aria-hidden="true"
+                                    className={severityDotClass(entry.severity)}
+                                  />
+                                  <span className="truncate text-sm font-medium">
+                                    {entry.scope === "global"
+                                      ? "Global"
+                                      : "Project"}
+                                  </span>
+                                </span>
+                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  {entry.severity}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                                {entry.scope === "project" && entry.workspace
+                                  ? `${entry.workspace} · ${compactPath(entry.root_path)}`
+                                  : compactPath(entry.root_path)}
+                              </p>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )
+                ) : null}
               </section>
             </CardContent>
           </Card>
 
           <Card className="min-h-[520px] overflow-hidden lg:flex lg:h-full lg:min-h-0 lg:flex-col">
-            {!showSkill && !showSubagent && !showMcp ? (
+            {!showSkill && !showSubagent && !showMcp && !showAgents ? (
               <CardContent className="flex h-full items-center justify-center text-sm text-muted-foreground lg:min-h-0 lg:flex-1">
                 Select an item to view details.
               </CardContent>
@@ -1552,6 +1741,138 @@ export function App() {
                             className="rounded-md bg-muted/20 p-2 font-mono"
                           >
                             {path}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                </CardContent>
+              </>
+            ) : null}
+
+            {showAgents ? (
+              <>
+                <CardHeader className="border-b border-border/60 pb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <CardTitle className="text-lg leading-tight">
+                        {showAgents.scope === "global"
+                          ? "Global AGENTS.md"
+                          : "Project AGENTS.md"}
+                      </CardTitle>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {showAgents.root_path}
+                      </p>
+                    </div>
+                    <Badge
+                      variant={
+                        showAgents.severity === "critical"
+                          ? "error"
+                          : showAgents.severity === "warning"
+                            ? "warning"
+                            : "success"
+                      }
+                    >
+                      {showAgents.severity}
+                    </Badge>
+                  </div>
+                </CardHeader>
+
+                <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+                  <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-muted-foreground">Scope</dt>
+                      <dd className="mt-0.5">{showAgents.scope}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Workspace</dt>
+                      <dd className="mt-0.5 break-all font-mono">
+                        {showAgents.workspace ?? "-"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Root path</dt>
+                      <dd className="mt-0.5 break-all font-mono">
+                        {showAgents.root_path}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Exists</dt>
+                      <dd className="mt-0.5">
+                        {showAgents.exists ? "yes" : "no"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Raw</dt>
+                      <dd className="mt-0.5">
+                        {showAgents.raw_chars} chars · {showAgents.raw_lines}{" "}
+                        lines
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Rendered</dt>
+                      <dd className="mt-0.5">
+                        {showAgents.rendered_chars} chars ·{" "}
+                        {showAgents.rendered_lines} lines ·{" "}
+                        {showAgents.tokens_estimate} est tokens
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <section className="space-y-1.5 border-t border-border/50 pt-3">
+                    <h3 className="text-xs font-semibold text-muted-foreground">
+                      Include stats
+                    </h3>
+                    <ul className="space-y-1 text-xs text-muted-foreground">
+                      <li>{`Includes: ${showAgents.include_count}`}</li>
+                      <li>{`Missing includes: ${showAgents.missing_includes.length}`}</li>
+                      <li>{`Cycles detected: ${showAgents.cycles_detected.length}`}</li>
+                      <li>{`Depth cap reached: ${showAgents.max_depth_reached ? "yes" : "no"}`}</li>
+                    </ul>
+                  </section>
+
+                  <section className="space-y-1.5 border-t border-border/50 pt-3">
+                    <h3 className="text-xs font-semibold text-muted-foreground">
+                      Top segments
+                    </h3>
+                    {selectedAgentTopSegments.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No rendered segments.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1 text-xs">
+                        {selectedAgentTopSegments.map((segment) => (
+                          <li
+                            key={`${segment.path}:${segment.depth}`}
+                            className="rounded-md bg-muted/20 p-2"
+                          >
+                            <p className="truncate font-mono">{segment.path}</p>
+                            <p className="mt-0.5 text-[11px] text-muted-foreground">
+                              {segment.tokens_estimate} est tokens ·{" "}
+                              {segment.chars} chars · depth {segment.depth}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="space-y-1.5 border-t border-border/50 pt-3">
+                    <h3 className="text-xs font-semibold text-muted-foreground">
+                      Diagnostics
+                    </h3>
+                    {showAgents.diagnostics.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No diagnostics.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1 text-xs">
+                        {showAgents.diagnostics.map((item) => (
+                          <li
+                            key={item}
+                            className="rounded-md bg-muted/20 p-2 font-mono"
+                          >
+                            {item}
                           </li>
                         ))}
                       </ul>

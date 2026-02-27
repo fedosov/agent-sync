@@ -2,6 +2,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useSyncState } from "./useSyncState";
 import * as tauriApi from "../tauriApi";
+import type { DashboardSnapshot } from "../types";
 
 vi.mock("../tauriApi", () => ({
   getRuntimeControls: vi.fn(),
@@ -11,7 +12,7 @@ vi.mock("../tauriApi", () => ({
   listSubagents: vi.fn(),
 }));
 
-function snapshot(version: string) {
+function snapshot(version: string): DashboardSnapshot {
   return {
     state: {
       generated_at: version,
@@ -57,8 +58,9 @@ describe("useSyncState", () => {
       auto_watch_active: false,
     });
 
-    let resolveFirst: ((value: ReturnType<typeof snapshot>) => void) | null =
-      null;
+    let resolveFirst:
+      | ((value: DashboardSnapshot | PromiseLike<DashboardSnapshot>) => void)
+      | null = null;
     vi.mocked(tauriApi.loadDashboardSnapshot)
       .mockImplementationOnce(
         () =>
@@ -93,7 +95,9 @@ describe("useSyncState", () => {
       auto_watch_active: false,
     });
 
-    const resolvers: Array<(value: ReturnType<typeof snapshot>) => void> = [];
+    const resolvers: Array<
+      (value: DashboardSnapshot | PromiseLike<DashboardSnapshot>) => void
+    > = [];
     vi.mocked(tauriApi.loadDashboardSnapshot).mockImplementation(
       () =>
         new Promise((resolve) => {

@@ -2,9 +2,9 @@
 
 use serde::Serialize;
 use skillssync_core::{
-    watch::SyncWatchStream, AuditEvent, AuditEventStatus, DotagentsScope, McpAgent,
-    McpServerRecord, ScopeFilter, SkillLifecycleStatus, SkillLocator, SkillRecord, SubagentRecord,
-    SyncEngine, SyncState, SyncTrigger,
+    watch::SyncWatchStream, AgentsContextReport, AuditEvent, AuditEventStatus, DotagentsScope,
+    McpAgent, McpServerRecord, ScopeFilter, SkillLifecycleStatus, SkillLocator, SkillRecord,
+    SubagentRecord, SyncEngine, SyncState, SyncTrigger,
 };
 use std::cmp::Ordering;
 use std::fs;
@@ -351,6 +351,11 @@ fn clear_audit_events(runtime: tauri::State<RuntimeState>) -> Result<(), String>
 #[tauri::command]
 fn get_state() -> SyncState {
     SyncEngine::current().load_state()
+}
+
+#[tauri::command]
+fn get_agents_context_report() -> AgentsContextReport {
+    SyncEngine::current().get_agents_context_report()
 }
 
 #[tauri::command]
@@ -1152,6 +1157,7 @@ fn main() {
             list_audit_events,
             clear_audit_events,
             get_state,
+            get_agents_context_report,
             get_starred_skill_ids,
             set_skill_starred,
             list_skills,

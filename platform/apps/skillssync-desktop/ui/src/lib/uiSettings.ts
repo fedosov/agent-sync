@@ -29,7 +29,8 @@ function parseSettings(raw: unknown): UiSettings {
     lastActiveTab:
       candidate.lastActiveTab === "skills" ||
       candidate.lastActiveTab === "subagents" ||
-      candidate.lastActiveTab === "mcp"
+      candidate.lastActiveTab === "mcp" ||
+      candidate.lastActiveTab === "agents"
         ? candidate.lastActiveTab
         : DEFAULT_UI_SETTINGS.lastActiveTab,
   };
@@ -46,7 +47,8 @@ export function loadUiSettings(): UiSettings {
       if (
         legacyFocus === "skills" ||
         legacyFocus === "subagents" ||
-        legacyFocus === "mcp"
+        legacyFocus === "mcp" ||
+        legacyFocus === "agents"
       ) {
         return {
           ...DEFAULT_UI_SETTINGS,

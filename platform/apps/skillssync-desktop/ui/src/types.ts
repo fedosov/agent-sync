@@ -49,10 +49,11 @@ export type RuntimeControls = {
 };
 
 export type RefreshIntervalMinutes = 0 | 5 | 15 | 30;
+export type FocusKind = "skills" | "subagents" | "mcp" | "agents";
 
 export type UiSettings = {
   refreshIntervalMinutes: RefreshIntervalMinutes;
-  lastActiveTab: "skills" | "subagents" | "mcp";
+  lastActiveTab: FocusKind;
 };
 
 export type AuditEventStatus = "success" | "failed" | "blocked";
@@ -121,6 +122,66 @@ export type SyncState = {
   mcp_servers?: McpServerRecord[];
   top_skills?: string[];
   top_subagents?: string[];
+};
+
+export type AgentContextSeverity = "ok" | "warning" | "critical";
+
+export type AgentContextSegment = {
+  path: string;
+  depth: number;
+  chars: number;
+  lines: number;
+  tokens_estimate: number;
+};
+
+export type AgentContextEntry = {
+  id: string;
+  scope: "global" | "project";
+  workspace: string | null;
+  root_path: string;
+  exists: boolean;
+  severity: AgentContextSeverity;
+  raw_chars: number;
+  raw_lines: number;
+  rendered_chars: number;
+  rendered_lines: number;
+  tokens_estimate: number;
+  include_count: number;
+  missing_includes: string[];
+  cycles_detected: string[];
+  max_depth_reached: boolean;
+  diagnostics: string[];
+  segments: AgentContextSegment[];
+};
+
+export type AgentsContextLimits = {
+  include_max_depth: number;
+  file_warning_tokens: number;
+  file_critical_tokens: number;
+  total_warning_tokens: number;
+  total_critical_tokens: number;
+  tokens_formula: string;
+};
+
+export type AgentsContextTotals = {
+  roots_count: number;
+  rendered_chars: number;
+  rendered_lines: number;
+  tokens_estimate: number;
+  include_count: number;
+  missing_include_count: number;
+  cycle_count: number;
+  max_depth_reached_count: number;
+  severity: AgentContextSeverity;
+};
+
+export type AgentsContextReport = {
+  generated_at: string;
+  limits: AgentsContextLimits;
+  totals: AgentsContextTotals;
+  warning_count: number;
+  critical_count: number;
+  entries: AgentContextEntry[];
 };
 
 export type DashboardSnapshot = {

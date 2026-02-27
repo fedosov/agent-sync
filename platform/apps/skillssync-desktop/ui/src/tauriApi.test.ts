@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  getAgentsContextReport,
   getRuntimeControls,
   loadDashboardSnapshot,
   getStarredSkillIds,
@@ -129,6 +130,11 @@ describe("tauriApi command payloads", () => {
   it("loads state without args", async () => {
     await getState();
     expect(invoke).toHaveBeenCalledWith("get_state");
+  });
+
+  it("loads agents context report without args", async () => {
+    await getAgentsContextReport();
+    expect(invoke).toHaveBeenCalledWith("get_agents_context_report");
   });
 
   it("lists subagents with scope", async () => {

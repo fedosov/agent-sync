@@ -6,7 +6,7 @@ APP_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop
 UI_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop/ui
 TAURI_DIR := $(PLATFORM_DIR)/apps/skillssync-desktop/src-tauri
 
-.PHONY: all build run app lint lint-fix prepare-dotagents-runtime lint-rust lint-fix-rust lint-ui lint-fix-ui lint-workflows test test-rust hooks-install release
+.PHONY: all build run app lint lint-fix prepare-dotagents-runtime lint-rust lint-fix-rust lint-ui lint-fix-ui lint-workflows test test-rust typecheck-ts check-rust hooks-install release
 
 all: app
 
@@ -68,6 +68,13 @@ test: test-rust
 test-rust: prepare-dotagents-runtime
 	mkdir -p "$(UI_DIR)/dist"
 	cd "$(PLATFORM_DIR)" && cargo test --workspace
+
+typecheck-ts:
+	cd "$(UI_DIR)" && npx tsc --noEmit
+
+check-rust: prepare-dotagents-runtime
+	mkdir -p "$(UI_DIR)/dist"
+	cd "$(PLATFORM_DIR)" && cargo check --workspace
 
 hooks-install:
 	"$(ROOT_DIR)/scripts/install-git-hooks.sh"

@@ -1,3 +1,4 @@
+pub mod agents_context;
 pub mod audit_store;
 pub mod codex_registry;
 pub mod codex_subagent_registry;
@@ -12,6 +13,10 @@ pub mod settings;
 pub mod state_store;
 pub mod watch;
 
+pub use agents_context::{
+    AgentContextEntry, AgentContextSegment, AgentContextSeverity, AgentsContextLimits,
+    AgentsContextReport, AgentsContextTotals,
+};
 pub use audit_store::{SyncAuditStore, DEFAULT_AUDIT_LOG_LIMIT};
 pub use engine::{DotagentsScope, ScopeFilter, SkillLocator, SyncEngine, SyncEngineEnvironment};
 pub use error::SyncEngineError;

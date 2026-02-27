@@ -1,3 +1,4 @@
+use crate::agents_context::{build_agents_context_report, AgentsContextReport};
 use crate::audit_store::{SyncAuditStore, DEFAULT_AUDIT_LOG_LIMIT};
 use crate::codex_registry::CodexSkillsRegistryWriter;
 use crate::codex_subagent_registry::{CodexSubagentConfigEntry, CodexSubagentRegistryWriter};
@@ -227,6 +228,11 @@ impl SyncEngine {
 
     pub fn load_state(&self) -> SyncState {
         self.store.load_state()
+    }
+
+    pub fn get_agents_context_report(&self) -> AgentsContextReport {
+        let state = self.load_state();
+        build_agents_context_report(&self.environment.home_directory, &state)
     }
 
     pub fn allow_filesystem_changes(&self) -> bool {
