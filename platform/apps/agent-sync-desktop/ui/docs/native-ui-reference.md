@@ -1,6 +1,6 @@
 # Native UI Reference
 
-This document maps official desktop design guidance to concrete SkillsSync UI rules.
+This document maps official desktop design guidance to concrete Agent Sync UI rules.
 
 ## Sources
 
@@ -17,7 +17,7 @@ This document maps official desktop design guidance to concrete SkillsSync UI ru
 
 ## Rule Mapping
 
-| Guideline rule                                              | SkillsSync implementation                                                       |
+| Guideline rule                                              | Agent Sync implementation                                                       |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | Use system typography and control metrics                   | `src/index.css` platform font variables and control height variables            |
 | Respect system light/dark modes                             | `src/index.css` with `prefers-color-scheme` token overrides                     |

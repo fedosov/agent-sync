@@ -7,7 +7,7 @@ It removes repetitive manual copying and relinking by rebuilding managed links a
 It makes cross-agent behavior predictable by detecting conflicts and applying deterministic sync results.
 
 ## Screenshot
-![](docs/images/skillssync-screenshot-2b33fbe00faf.png)
+![](docs/images/agent-sync-screenshot-2b33fbe00faf.png)
 
 ## Run on macOS / Windows / Linux
 ### macOS
