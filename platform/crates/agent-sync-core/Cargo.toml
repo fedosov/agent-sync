@@ -1,5 +1,5 @@
 [package]
-name = "skillssync-core"
+name = "agent-sync-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

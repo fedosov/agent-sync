@@ -1,6 +1,6 @@
+use agent_sync_core::{DotagentsScope, SyncEngine};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use skillssync_core::{DotagentsScope, SyncEngine};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

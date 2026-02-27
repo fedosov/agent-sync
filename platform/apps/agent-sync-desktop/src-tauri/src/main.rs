@@ -1,11 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
-use skillssync_core::{
+use agent_sync_core::{
     watch::SyncWatchStream, AgentsContextReport, AuditEvent, AuditEventStatus, DotagentsScope,
     McpAgent, McpServerRecord, ScopeFilter, SkillLifecycleStatus, SkillLocator, SkillRecord,
     SubagentRecord, SyncEngine, SyncState, SyncTrigger,
 };
+use serde::Serialize;
 use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1186,7 +1186,7 @@ fn main() {
             get_platform_context,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running skillssync desktop app");
+        .expect("error while running agent-sync desktop app");
 }
 
 #[cfg(test)]
@@ -1197,7 +1197,7 @@ mod tests {
         set_allow_filesystem_changes_inner, set_allow_filesystem_changes_inner_with,
         stop_auto_watch, RuntimeState, SubagentTargetKind,
     };
-    use skillssync_core::{
+    use agent_sync_core::{
         AuditEventStatus, SyncEngine, SyncEngineEnvironment, SyncPaths, SyncPreferencesStore,
         SyncStateStore,
     };

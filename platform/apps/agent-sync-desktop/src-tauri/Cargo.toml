@@ -1,5 +1,5 @@
 [package]
-name = "skillssync-desktop"
+name = "agent-sync-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-skillssync-core = { path = "../../../crates/agent-sync-core" }
+agent-sync-core = { path = "../../../crates/agent-sync-core" }
 tauri = { version = "2", features = [] }
 
 [dev-dependencies]

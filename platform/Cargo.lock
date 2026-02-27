@@ -9,6 +9,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-sync-cli"
+version = "0.2.1"
+dependencies = [
+ "agent-sync-core",
+ "anyhow",
+ "clap",
+ "serde_json",
+]
+
+[[package]]
+name = "agent-sync-core"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "directories",
+ "notify",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "agent-sync-desktop"
+version = "0.2.1"
+dependencies = [
+ "agent-sync-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3180,46 +3220,6 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
-
-[[package]]
-name = "skillssync-cli"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "clap",
- "serde_json",
- "skillssync-core",
-]
-
-[[package]]
-name = "skillssync-core"
-version = "0.2.1"
-dependencies = [
- "chrono",
- "directories",
- "notify",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "skillssync-desktop"
-version = "0.2.1"
-dependencies = [
- "serde",
- "serde_json",
- "skillssync-core",
- "tauri",
- "tauri-build",
- "tempfile",
-]
 
 [[package]]
 name = "slab"

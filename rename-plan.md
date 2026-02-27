@@ -94,13 +94,13 @@ Chosen decisions:
 
 ### Task 2: Rename package/crate/bin identifiers in Cargo manifests
 
-- [ ] Update platform/crates/agent-sync-core/Cargo.toml package name to agent-sync-core
-- [ ] Update platform/crates/agent-sync-cli/Cargo.toml package name to agent-sync-cli and bin name to agent-sync
-- [ ] Update platform/apps/agent-sync-desktop/src-tauri/Cargo.toml package name and dependencies
-- [ ] Update workspace.package authors in platform/Cargo.toml
-- [ ] Replace all `use skillssync_core::` with `use agent_sync_core::` in Rust source files
-- [ ] Replace `extern crate skillssync_core` if any
-- [ ] Run cargo check to regenerate Cargo.lock with new crate names
+- [x] Update platform/crates/agent-sync-core/Cargo.toml package name to agent-sync-core
+- [x] Update platform/crates/agent-sync-cli/Cargo.toml package name to agent-sync-cli and bin name to agent-sync
+- [x] Update platform/apps/agent-sync-desktop/src-tauri/Cargo.toml package name and dependencies
+- [x] Update workspace.package authors in platform/Cargo.toml
+- [x] Replace all `use skillssync_core::` with `use agent_sync_core::` in Rust source files
+- [x] Replace `extern crate skillssync_core` if any
+- [x] Run cargo check to regenerate Cargo.lock with new crate names
 
 ### Task 3: Rename app branding and Tauri identity
 

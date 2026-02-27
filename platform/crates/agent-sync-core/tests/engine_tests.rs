@@ -1,9 +1,9 @@
-use serde_json::Value as JsonValue;
-use skillssync_core::{
+use agent_sync_core::{
     AuditEventStatus, DotagentsScope, McpAgent, ScopeFilter, SkillLifecycleStatus, SkillLocator,
     SyncEngine, SyncEngineEnvironment, SyncPaths, SyncPreferencesStore, SyncStateStore,
     SyncTrigger,
 };
+use serde_json::Value as JsonValue;
 use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
@@ -87,7 +87,7 @@ fn find_skill(
     engine: &SyncEngine,
     skill_key: &str,
     status: Option<SkillLifecycleStatus>,
-) -> skillssync_core::SkillRecord {
+) -> agent_sync_core::SkillRecord {
     engine
         .find_skill(&SkillLocator {
             skill_key: String::from(skill_key),
@@ -97,11 +97,11 @@ fn find_skill(
 }
 
 fn find_mcp<'a>(
-    state: &'a skillssync_core::SyncState,
+    state: &'a agent_sync_core::SyncState,
     server_key: &str,
     scope: &str,
     workspace: Option<&str>,
-) -> &'a skillssync_core::McpServerRecord {
+) -> &'a agent_sync_core::McpServerRecord {
     state
         .mcp_servers
         .iter()
@@ -334,7 +334,7 @@ fn run_sync_reports_conflict_when_hashes_differ() {
     let persisted = engine.load_state();
     assert_eq!(
         persisted.sync.status,
-        skillssync_core::SyncHealthStatus::Failed
+        agent_sync_core::SyncHealthStatus::Failed
     );
     assert_eq!(persisted.summary.conflict_count, 1);
     assert_eq!(persisted.subagent_summary.conflict_count, 0);

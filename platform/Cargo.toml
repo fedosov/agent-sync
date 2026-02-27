@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 version = "0.2.1"
-authors = ["SkillsSync Team"]
+authors = ["Agent Sync Team"]
 
 [workspace.dependencies]
 anyhow = "1.0"
