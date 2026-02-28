@@ -167,8 +167,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install and build UI
+      - name: Install UI dependencies
         working-directory: platform/apps/agent-sync-desktop/ui
-        run: |
-          npm ci
-          npm run build
+        run: npm ci
+
+      - name: Build UI
+        working-directory: platform/apps/agent-sync-desktop/ui
+        run: npm run build
