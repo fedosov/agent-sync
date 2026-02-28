@@ -5,7 +5,7 @@ use crate::codex_subagent_registry::{CodexSubagentConfigEntry, CodexSubagentRegi
 use crate::dotagents_adapter::DotagentsAdapter;
 use crate::dotagents_runtime::DotagentsRuntimeManager;
 use crate::error::SyncEngineError;
-use crate::mcp_registry::{McpAgent, McpRegistry, McpSyncOutcome};
+use crate::mcp_registry::{McpAgent, McpRegistry, McpSyncOutcome, UnmanagedClaudeMcpFixReport};
 use crate::models::{
     AuditEvent, AuditEventStatus, McpServerRecord, SkillLifecycleStatus, SkillRecord,
     SubagentRecord, SyncConflict, SyncConflictKind, SyncHealthStatus, SyncMetadata, SyncState,
@@ -555,6 +555,18 @@ impl SyncEngine {
         );
         registry.set_enabled(&workspaces, server_key, agent, enabled, scope, workspace)?;
         self.run_sync(SyncTrigger::Manual)
+    }
+
+    pub fn fix_unmanaged_claude_mcp(
+        &self,
+        apply: bool,
+    ) -> Result<UnmanagedClaudeMcpFixReport, SyncEngineError> {
+        let workspaces = self.workspace_candidates();
+        let registry = McpRegistry::new(
+            self.environment.home_directory.clone(),
+            self.environment.runtime_directory.clone(),
+        );
+        registry.fix_unmanaged_claude_mcp(&workspaces, apply)
     }
 
     pub fn watch_paths(&self) -> Vec<PathBuf> {

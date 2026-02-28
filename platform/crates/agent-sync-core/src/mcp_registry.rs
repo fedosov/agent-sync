@@ -48,6 +48,24 @@ pub struct McpSyncOutcome {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnmanagedClaudeMcpCandidate {
+    pub server_key: String,
+    pub scope: String,
+    pub workspace: Option<String>,
+    pub file_path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnmanagedClaudeMcpFixReport {
+    pub apply: bool,
+    pub candidates: Vec<UnmanagedClaudeMcpCandidate>,
+    pub removed_count: usize,
+    pub changed_files: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpScope {
     Global,
@@ -146,12 +164,26 @@ enum JsonTargetLocation {
     Project { workspace: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ClaudeJsonTargetLocation {
+    Root,
+    Project { workspace: String },
+}
+
 #[derive(Debug, Clone)]
 struct JsonWritePlan {
     path: PathBuf,
     location: JsonTargetLocation,
     create_when_missing: bool,
     entries: Vec<JsonCatalogEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct BrokenUnmanagedClaudeCandidate {
+    output: UnmanagedClaudeMcpCandidate,
+    path: PathBuf,
+    location: ClaudeJsonTargetLocation,
+    server_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -193,6 +225,14 @@ impl McpRegistry {
                         item.entry.catalog_id,
                         item.file_path.display()
                     ));
+                    if let Some(candidate) = build_broken_unmanaged_claude_candidate(item) {
+                        warnings.push(format!(
+                            "Broken unmanaged Claude MCP '{}' in {}: {}",
+                            candidate.output.server_key,
+                            candidate.output.file_path,
+                            candidate.output.reason
+                        ));
+                    }
                 }
             }
         }
@@ -511,6 +551,41 @@ impl McpRegistry {
         }
 
         self.write_central_catalog(&catalog)
+    }
+
+    pub fn fix_unmanaged_claude_mcp(
+        &self,
+        workspaces: &[PathBuf],
+        apply: bool,
+    ) -> Result<UnmanagedClaudeMcpFixReport, SyncEngineError> {
+        let mut warnings = Vec::new();
+        let discovered = self.discover_all(workspaces, &mut warnings);
+        let catalog = self.load_central_catalog(&mut warnings)?;
+        let mut candidates = collect_broken_unmanaged_claude_candidates(&discovered, &catalog);
+
+        let mut removed_count = 0usize;
+        let mut changed_files = Vec::new();
+        if apply {
+            let outcome =
+                self.remove_broken_unmanaged_claude_entries(&candidates, &mut warnings)?;
+            removed_count = outcome.removed_count;
+            changed_files = outcome.changed_files;
+            candidates = collect_broken_unmanaged_claude_candidates(
+                &self.discover_all(workspaces, &mut warnings),
+                &catalog,
+            );
+        }
+
+        warnings.sort();
+        warnings.dedup();
+
+        Ok(UnmanagedClaudeMcpFixReport {
+            apply,
+            candidates: candidates.into_iter().map(|item| item.output).collect(),
+            removed_count,
+            changed_files,
+            warnings,
+        })
     }
 
     fn effective_global_claude_target_path(&self) -> PathBuf {
@@ -1254,6 +1329,133 @@ impl McpRegistry {
         fs::write(&path, data).map_err(|error| SyncEngineError::io(path, error))
     }
 
+    fn remove_broken_unmanaged_claude_entries(
+        &self,
+        candidates: &[BrokenUnmanagedClaudeCandidate],
+        warnings: &mut Vec<String>,
+    ) -> Result<RemovalOutcome, SyncEngineError> {
+        let mut grouped: BTreeMap<(PathBuf, ClaudeJsonTargetLocation), BTreeSet<String>> =
+            BTreeMap::new();
+        for candidate in candidates {
+            grouped
+                .entry((candidate.path.clone(), candidate.location.clone()))
+                .or_default()
+                .insert(candidate.server_key.clone());
+        }
+
+        let mut changed_files = BTreeSet::new();
+        let mut removed_count = 0usize;
+
+        for ((path, location), keys) in grouped {
+            let raw = match fs::read_to_string(&path) {
+                Ok(value) => value,
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        warnings.push(format!(
+                            "Skipped unmanaged Claude MCP repair for {} because file is missing",
+                            path.display()
+                        ));
+                        continue;
+                    }
+                    return Err(SyncEngineError::io(&path, error));
+                }
+            };
+            if raw.trim().is_empty() {
+                continue;
+            }
+
+            let mut root = match serde_json::from_str::<JsonValue>(&raw) {
+                Ok(value) => value,
+                Err(error) => {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because JSON parse failed: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            let Some(root_obj) = root.as_object_mut() else {
+                warnings.push(format!(
+                    "Skipped unmanaged Claude MCP repair for {} because root is not an object",
+                    path.display()
+                ));
+                continue;
+            };
+
+            let removed_from_target = match location {
+                ClaudeJsonTargetLocation::Root => {
+                    let Some(mcp_servers) = root_obj.get_mut("mcpServers") else {
+                        continue;
+                    };
+                    let Some(server_map) = mcp_servers.as_object_mut() else {
+                        warnings.push(format!(
+                            "Skipped unmanaged Claude MCP repair for {} because mcpServers is not an object",
+                            path.display()
+                        ));
+                        continue;
+                    };
+                    remove_server_keys(server_map, &keys)
+                }
+                ClaudeJsonTargetLocation::Project { workspace } => {
+                    let Some(projects) = root_obj.get_mut("projects") else {
+                        continue;
+                    };
+                    let Some(projects_map) = projects.as_object_mut() else {
+                        warnings.push(format!(
+                            "Skipped unmanaged Claude MCP repair for {} because projects is not an object",
+                            path.display()
+                        ));
+                        continue;
+                    };
+                    let Some(project) = projects_map.get_mut(&workspace) else {
+                        continue;
+                    };
+                    let Some(project_obj) = project.as_object_mut() else {
+                        warnings.push(format!(
+                            "Skipped unmanaged Claude MCP repair for {} because projects.{} is not an object",
+                            path.display(),
+                            workspace
+                        ));
+                        continue;
+                    };
+                    let Some(mcp_servers) = project_obj.get_mut("mcpServers") else {
+                        continue;
+                    };
+                    let Some(server_map) = mcp_servers.as_object_mut() else {
+                        warnings.push(format!(
+                            "Skipped unmanaged Claude MCP repair for {} because projects.{}.mcpServers is not an object",
+                            path.display(),
+                            workspace
+                        ));
+                        continue;
+                    };
+                    remove_server_keys(server_map, &keys)
+                }
+            };
+
+            if removed_from_target == 0 {
+                continue;
+            }
+
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| SyncEngineError::io(parent, error))?;
+            }
+
+            let mut rendered = serde_json::to_vec_pretty(&root)?;
+            rendered.push(b'\n');
+            fs::write(&path, rendered).map_err(|error| SyncEngineError::io(&path, error))?;
+
+            removed_count += removed_from_target;
+            changed_files.insert(path.display().to_string());
+        }
+
+        Ok(RemovalOutcome {
+            removed_count,
+            changed_files: changed_files.into_iter().collect(),
+        })
+    }
+
     fn central_config_path(&self) -> PathBuf {
         self.home_directory
             .join(".config")
@@ -1328,6 +1530,158 @@ struct InferredCatalogId<'a> {
     scope: Option<&'a str>,
     workspace: Option<&'a str>,
     server_key: Option<&'a str>,
+}
+
+struct RemovalOutcome {
+    removed_count: usize,
+    changed_files: Vec<String>,
+}
+
+fn collect_broken_unmanaged_claude_candidates(
+    discovered: &[Discovered],
+    catalog: &BTreeMap<String, CatalogEntry>,
+) -> Vec<BrokenUnmanagedClaudeCandidate> {
+    let mut result = Vec::new();
+    let mut seen = BTreeSet::new();
+    for item in discovered {
+        if catalog.contains_key(&item.entry.catalog_id) {
+            continue;
+        }
+        let Some(candidate) = build_broken_unmanaged_claude_candidate(item) else {
+            continue;
+        };
+        let key = format!(
+            "{}::{}::{}::{}",
+            candidate.output.file_path,
+            candidate.output.server_key,
+            candidate.output.scope,
+            candidate.output.workspace.clone().unwrap_or_default()
+        );
+        if seen.insert(key) {
+            result.push(candidate);
+        }
+    }
+    result.sort_by(|lhs, rhs| {
+        lhs.output
+            .file_path
+            .cmp(&rhs.output.file_path)
+            .then_with(|| lhs.output.scope.cmp(&rhs.output.scope))
+            .then_with(|| lhs.output.workspace.cmp(&rhs.output.workspace))
+            .then_with(|| lhs.output.server_key.cmp(&rhs.output.server_key))
+            .then_with(|| lhs.output.reason.cmp(&rhs.output.reason))
+    });
+    result
+}
+
+fn build_broken_unmanaged_claude_candidate(
+    item: &Discovered,
+) -> Option<BrokenUnmanagedClaudeCandidate> {
+    if !is_claude_json_source(item.source) {
+        return None;
+    }
+    let location = source_to_claude_location(item)?;
+    let reason = detect_broken_unmanaged_claude_reason(&item.entry.definition)?;
+    Some(BrokenUnmanagedClaudeCandidate {
+        output: UnmanagedClaudeMcpCandidate {
+            server_key: item.entry.server_key.clone(),
+            scope: item.entry.scope.as_str().to_string(),
+            workspace: item.entry.workspace.clone(),
+            file_path: item.file_path.display().to_string(),
+            reason,
+        },
+        path: item.file_path.clone(),
+        location,
+        server_key: item.entry.server_key.clone(),
+    })
+}
+
+fn is_claude_json_source(source: SourceKind) -> bool {
+    matches!(
+        source,
+        SourceKind::ClaudeUserGlobal
+            | SourceKind::ClaudeLocalGlobal
+            | SourceKind::ClaudeGlobalGlobal
+            | SourceKind::ClaudeUserProject
+    )
+}
+
+fn source_to_claude_location(item: &Discovered) -> Option<ClaudeJsonTargetLocation> {
+    match item.source {
+        SourceKind::ClaudeUserProject => Some(ClaudeJsonTargetLocation::Project {
+            workspace: item.entry.workspace.clone()?,
+        }),
+        SourceKind::ClaudeUserGlobal
+        | SourceKind::ClaudeLocalGlobal
+        | SourceKind::ClaudeGlobalGlobal => Some(ClaudeJsonTargetLocation::Root),
+        _ => None,
+    }
+}
+
+fn detect_broken_unmanaged_claude_reason(definition: &McpDefinition) -> Option<String> {
+    if definition.transport != McpTransport::Stdio {
+        return None;
+    }
+
+    let command = definition.command.as_deref()?.trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    let command_path = Path::new(command);
+    if command_path.is_absolute() && !command_path.exists() {
+        return Some(format!(
+            "stdio command path does not exist: {}",
+            command_path.display()
+        ));
+    }
+
+    if is_interpreter_style_command(command) {
+        let first_arg = definition.args.first().map(|value| value.trim())?;
+        let first_arg_path = Path::new(first_arg);
+        if first_arg_path.is_absolute() && !first_arg_path.exists() {
+            return Some(format!(
+                "stdio interpreter arg path does not exist: {}",
+                first_arg_path.display()
+            ));
+        }
+    }
+
+    None
+}
+
+fn is_interpreter_style_command(command: &str) -> bool {
+    let binary = Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    matches!(
+        binary.as_str(),
+        "node"
+            | "node.exe"
+            | "nodejs"
+            | "python"
+            | "python.exe"
+            | "python3"
+            | "python3.exe"
+            | "bun"
+            | "bun.exe"
+            | "deno"
+            | "deno.exe"
+            | "uv"
+            | "uvx"
+            | "tsx"
+    )
+}
+
+fn remove_server_keys(servers: &mut JsonMap<String, JsonValue>, keys: &BTreeSet<String>) -> usize {
+    let mut removed = 0usize;
+    for key in keys {
+        if servers.remove(key).is_some() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn push_json_plan_entry(
@@ -1949,12 +2303,7 @@ fn render_codex_block(definitions: &BTreeMap<String, McpDefinition>) -> String {
 fn detect_inline_secret_warnings(server_key: &str, definition: &McpDefinition) -> Vec<String> {
     let mut warnings = Vec::new();
     for (key, value) in &definition.env {
-        let key_lower = key.to_ascii_lowercase();
-        if !(key_lower.contains("token")
-            || key_lower.contains("secret")
-            || key_lower.contains("password")
-            || key_lower.contains("api_key"))
-        {
+        if !is_secret_like_key(key) {
             continue;
         }
         if !value.starts_with("${") {
@@ -1965,17 +2314,34 @@ fn detect_inline_secret_warnings(server_key: &str, definition: &McpDefinition) -
         }
     }
     for arg in &definition.args {
-        let lower = arg.to_ascii_lowercase();
-        if (lower.contains("token=") || lower.contains("secret=") || lower.contains("api_key="))
-            && !arg.contains("${")
-        {
+        if let Some(redacted) = redact_secret_like_arg(arg) {
             warnings.push(format!(
                 "MCP server '{}' has inline secret-like argument '{}'",
-                server_key, arg
+                server_key, redacted
             ));
         }
     }
     warnings
+}
+
+fn is_secret_like_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("api_key")
+        || normalized.contains("apikey")
+}
+
+fn redact_secret_like_arg(arg: &str) -> Option<String> {
+    let (key, value) = arg.split_once('=')?;
+    if value.is_empty() || value.contains("${") {
+        return None;
+    }
+    if !is_secret_like_key(key) {
+        return None;
+    }
+    Some(format!("{key}=<redacted>"))
 }
 
 fn source_label(source: SourceKind) -> &'static str {

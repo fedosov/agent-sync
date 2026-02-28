@@ -20,7 +20,7 @@ pub use agents_context::{
 pub use audit_store::{SyncAuditStore, DEFAULT_AUDIT_LOG_LIMIT};
 pub use engine::{DotagentsScope, ScopeFilter, SkillLocator, SyncEngine, SyncEngineEnvironment};
 pub use error::SyncEngineError;
-pub use mcp_registry::McpAgent;
+pub use mcp_registry::{McpAgent, UnmanagedClaudeMcpCandidate, UnmanagedClaudeMcpFixReport};
 pub use models::{
     AuditEvent, AuditEventStatus, McpEnabledByAgent, McpServerRecord, McpTransport,
     SkillLifecycleStatus, SkillRecord, SubagentRecord, SyncConflict, SyncHealthStatus,

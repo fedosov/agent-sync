@@ -92,6 +92,20 @@ function compactPath(path: string | null | undefined): string {
   return `/${segments[0]}/.../${segments[segments.length - 1]}`;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function warningMentionsServer(warning: string, serverKey: string): boolean {
+  const escaped = escapeRegExp(serverKey);
+  const catalogIdPattern = new RegExp(`::${escaped}(?=$|[^A-Za-z0-9_-])`);
+  return (
+    warning.includes(`'${serverKey}'`) ||
+    warning.includes(`"${serverKey}"`) ||
+    catalogIdPattern.test(warning)
+  );
+}
+
 function formatIsoTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -204,6 +218,7 @@ export function App() {
     "Dotagents check not run yet.",
   );
   const [dotagentsNeedsMigration, setDotagentsNeedsMigration] = useState(false);
+  const [syncWarningsExpanded, setSyncWarningsExpanded] = useState(false);
 
   const applyState = useCallback(
     (next: SyncState, preferredKey?: string | null) => {
@@ -558,6 +573,22 @@ export function App() {
     state?.mcp_servers?.find(
       (item) => mcpSelectionKey(item) === selectedMcpKey,
     ) ?? null;
+  const syncWarnings = useMemo(
+    () => state?.sync.warnings ?? [],
+    [state?.sync.warnings],
+  );
+  const selectedMcpWarnings = useMemo(() => {
+    if (!selectedMcpServer) {
+      return [];
+    }
+    const merged = [
+      ...selectedMcpServer.warnings,
+      ...syncWarnings.filter((warning) =>
+        warningMentionsServer(warning, selectedMcpServer.server_key),
+      ),
+    ];
+    return Array.from(new Set(merged));
+  }, [selectedMcpServer, syncWarnings]);
   const selectedAgentEntry =
     agentsReport?.entries.find((item) => item.id === selectedAgentEntryId) ??
     null;
@@ -1009,6 +1040,42 @@ export function App() {
           <Card className="shrink-0 border-destructive/35 bg-destructive/10">
             <CardContent className="p-2 text-xs text-destructive">
               {state.sync.error}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {syncWarnings.length > 0 ? (
+          <Card
+            className="shrink-0 border-amber-500/40 bg-amber-500/10"
+            data-testid="sync-warning-banner"
+          >
+            <CardContent className="space-y-2 p-2 text-xs text-amber-800 dark:text-amber-200">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-medium">
+                  {`Sync warnings (${syncWarnings.length})`}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => setSyncWarningsExpanded((current) => !current)}
+                >
+                  {syncWarningsExpanded ? "Hide warnings" : "Show warnings"}
+                </Button>
+              </div>
+              {syncWarningsExpanded ? (
+                <ul className="space-y-1">
+                  {syncWarnings.map((warning) => (
+                    <li
+                      key={warning}
+                      className="rounded-md bg-amber-500/15 p-2"
+                    >
+                      {warning}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </CardContent>
           </Card>
         ) : null}
@@ -1741,6 +1808,28 @@ export function App() {
                             className="rounded-md bg-muted/20 p-2 font-mono"
                           >
                             {path}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="space-y-1.5 border-t border-border/50 pt-3">
+                    <h3 className="text-xs font-semibold text-muted-foreground">
+                      Warnings
+                    </h3>
+                    {selectedMcpWarnings.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No warnings.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1 text-xs">
+                        {selectedMcpWarnings.map((warning) => (
+                          <li
+                            key={warning}
+                            className="rounded-md bg-muted/20 p-2"
+                          >
+                            {warning}
                           </li>
                         ))}
                       </ul>

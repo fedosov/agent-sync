@@ -59,7 +59,15 @@ impl DotagentsAdapter {
         user_scope: bool,
     ) -> Result<JsonValue, SyncEngineError> {
         let output = self.run(args, cwd, user_scope)?;
-        serde_json::from_str(&output.stdout).map_err(SyncEngineError::Json)
+        match serde_json::from_str(&output.stdout) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(value) = fallback_empty_list_json(args, &output.stdout) {
+                    return Ok(value);
+                }
+                Err(SyncEngineError::Json(error))
+            }
+        }
     }
 
     fn execute_raw(
@@ -148,6 +156,17 @@ fn is_dotagents_init_already_exists_failure(args: &[&str], stderr: &str, stdout:
         || stdout_lower.contains("agents.toml already exists")
 }
 
+fn fallback_empty_list_json(args: &[&str], stdout: &str) -> Option<JsonValue> {
+    let trimmed = stdout.trim();
+    if args == ["list", "--json"] && trimmed == "No skills declared in agents.toml." {
+        return Some(JsonValue::Array(Vec::new()));
+    }
+    if args == ["mcp", "list", "--json"] && trimmed == "No MCP servers declared in agents.toml." {
+        return Some(JsonValue::Array(Vec::new()));
+    }
+    None
+}
+
 #[cfg(any(windows, test))]
 fn is_windows_shell_script(binary_path: &Path) -> bool {
     binary_path
@@ -162,6 +181,7 @@ mod tests {
     use super::{is_windows_shell_script, DotagentsAdapter};
     use crate::dotagents_runtime::DotagentsRuntimeManager;
     use crate::error::SyncEngineError;
+    use serde_json::Value as JsonValue;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -293,6 +313,123 @@ exit 9
                 assert_eq!(cwd, temp.path().to_path_buf());
             }
             other => panic!("expected DotagentsInitAlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_json_maps_known_empty_skills_message_to_empty_array() {
+        let temp = TempDir::new().expect("tempdir");
+        let script_path = temp.path().join("dotagents");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "dotagents 0.10.0"
+  exit 0
+fi
+if [ "$1" = "--user" ]; then
+  shift
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  echo "No skills declared in agents.toml."
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 9
+"#,
+        )
+        .expect("write script");
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+
+        let runtime = DotagentsRuntimeManager::new(temp.path().to_path_buf())
+            .with_override_binary(script_path);
+        let adapter = DotagentsAdapter::new(runtime);
+        let value = adapter
+            .run_json(&["list", "--json"], temp.path(), true)
+            .expect("list json");
+
+        assert_eq!(value, JsonValue::Array(vec![]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_json_maps_known_empty_mcp_message_to_empty_array() {
+        let temp = TempDir::new().expect("tempdir");
+        let script_path = temp.path().join("dotagents");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "dotagents 0.10.0"
+  exit 0
+fi
+if [ "$1" = "--user" ]; then
+  shift
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  echo "No MCP servers declared in agents.toml."
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 9
+"#,
+        )
+        .expect("write script");
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+
+        let runtime = DotagentsRuntimeManager::new(temp.path().to_path_buf())
+            .with_override_binary(script_path);
+        let adapter = DotagentsAdapter::new(runtime);
+        let value = adapter
+            .run_json(&["mcp", "list", "--json"], temp.path(), true)
+            .expect("mcp list json");
+
+        assert_eq!(value, JsonValue::Array(vec![]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_json_keeps_strict_behavior_for_other_non_json_output() {
+        let temp = TempDir::new().expect("tempdir");
+        let script_path = temp.path().join("dotagents");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "dotagents 0.10.0"
+  exit 0
+fi
+if [ "$1" = "--user" ]; then
+  shift
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  echo "No agents configured"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 9
+"#,
+        )
+        .expect("write script");
+        let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+
+        let runtime = DotagentsRuntimeManager::new(temp.path().to_path_buf())
+            .with_override_binary(script_path);
+        let adapter = DotagentsAdapter::new(runtime);
+        let error = adapter
+            .run_json(&["list", "--json"], temp.path(), true)
+            .expect_err("must fail with JSON parse error");
+
+        match error {
+            SyncEngineError::Json(_) => {}
+            other => panic!("expected SyncEngineError::Json, got {other:?}"),
         }
     }
 }

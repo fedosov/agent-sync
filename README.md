@@ -1,3 +1,10 @@
+> [!CAUTION]
+> **Pre-alpha concept.**
+> This is my personal attempt to build tooling for myself.
+> I'm still putting it together, so it can break and change a lot.
+> I'll keep improving it step by step toward a real product.
+> Use it at your own risk.
+
 ## What is this project?
 Agent Sync is a desktop app and CLI built on [Sentry dotagents](https://github.com/getsentry/dotagents) that keeps one canonical catalog of skills, subagents, and managed MCP servers synchronized across agent runtimes, and it is in active alpha development with daily real-world use by the developer.
 

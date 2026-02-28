@@ -52,6 +52,11 @@
       "example": "agent-sync mcp remove exa --scope project"
     },
     {
+      "name": "mcp fix-unmanaged-claude",
+      "args": ["--apply", "--json"],
+      "example": "agent-sync mcp fix-unmanaged-claude --json"
+    },
+    {
       "name": "migrate-dotagents",
       "args": ["--scope"],
       "example": "agent-sync migrate-dotagents --scope all"

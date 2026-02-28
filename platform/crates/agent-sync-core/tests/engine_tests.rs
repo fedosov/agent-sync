@@ -1756,6 +1756,341 @@ fn strict_dotagents_project_scope_write_commands_fail_without_workspace_context(
 
 #[test]
 #[cfg(unix)]
+fn strict_dotagents_user_scope_empty_list_messages_return_empty_vectors() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let user_contract = engine
+        .environment()
+        .home_directory
+        .join(".agents")
+        .join("agents.toml");
+    write_text(&user_contract, "[skills]\n");
+
+    let script_path = temp.path().join("dotagents");
+    write_text(
+        &script_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "dotagents 0.10.0"
+  exit 0
+fi
+if [ "$1" = "--user" ]; then
+  shift
+fi
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  echo "No skills declared in agents.toml."
+  exit 0
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  echo "No MCP servers declared in agents.toml."
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 9
+"#,
+    );
+    let mut perms = fs::metadata(&script_path).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms).expect("chmod");
+
+    let _lock = dotagents_env_lock().lock().expect("lock env");
+    let _env_guard = set_env_var_with_restore("AGENT_SYNC_DOTAGENTS_BIN", &script_path);
+
+    let skills = engine
+        .list_dotagents_skills(DotagentsScope::User)
+        .expect("skills list");
+    let mcp = engine
+        .list_dotagents_mcp(DotagentsScope::User)
+        .expect("mcp list");
+    assert!(skills.is_empty());
+    assert!(mcp.is_empty());
+}
+
+#[test]
+fn run_sync_warns_on_broken_unmanaged_claude_mcp_and_keeps_file_unchanged() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let workspace_key = workspace.display().to_string();
+    let broken_script = home
+        .join("missing")
+        .join("claude-mem")
+        .join("9.0.3")
+        .join("index.js");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::managed-exa"]
+server_key = "managed-exa"
+scope = "global"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::managed-exa".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(
+        &home.join(".claude.json"),
+        &format!(
+            r#"{{
+  "projects": {{
+    "{workspace_key}": {{
+      "mcpServers": {{
+        "claude-mem": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["{}"]
+        }}
+      }}
+    }}
+  }}
+}}
+"#,
+            broken_script.display()
+        ),
+    );
+    let before = fs::read_to_string(home.join(".claude.json")).expect("read before");
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    assert!(
+        state.sync.warnings.iter().any(|warning| {
+            warning.contains("Broken unmanaged Claude MCP 'claude-mem'")
+                && warning.contains(&broken_script.display().to_string())
+        }),
+        "missing explicit broken unmanaged warning: {:?}",
+        state.sync.warnings
+    );
+    assert!(!state
+        .mcp_servers
+        .iter()
+        .any(|server| server.server_key == "claude-mem"));
+
+    let after = fs::read_to_string(home.join(".claude.json")).expect("read after");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn run_sync_redacts_secret_like_arg_values_in_mcp_warnings() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+
+    write_text(
+        &engine
+            .environment()
+            .home_directory
+            .join(".codex")
+            .join("config.toml"),
+        r#"
+[mcp_servers.exa]
+command = "npx"
+args = ["--foo_token=super-secret-token", "--ok=1"]
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    let exa = find_mcp(&state, "exa", "global", None);
+    let joined_record = exa.warnings.join("\n");
+    let joined_sync = state.sync.warnings.join("\n");
+
+    assert!(joined_record.contains("--foo_token=<redacted>"));
+    assert!(!joined_record.contains("super-secret-token"));
+    assert!(joined_sync.contains("--foo_token=<redacted>"));
+    assert!(!joined_sync.contains("super-secret-token"));
+}
+
+#[test]
+fn fix_unmanaged_claude_mcp_dry_run_reports_candidates_without_writing() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let workspace_key = workspace.display().to_string();
+    let broken_global = home.join("missing").join("broken-global.js");
+    let broken_project = home.join("missing").join("broken-project.js");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::managed-keep"]
+server_key = "managed-keep"
+scope = "global"
+transport = "stdio"
+command = "node"
+args = ["/tmp/missing-managed.js"]
+[mcp_catalog."global::managed-keep".enabled_by_agent]
+codex = false
+claude = true
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(
+        &home.join(".claude.json"),
+        &format!(
+            r#"{{
+  "mcpServers": {{
+    "managed-keep": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["/tmp/missing-managed.js"]
+    }},
+    "broken-global": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["{}"]
+    }},
+    "healthy": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["relative-script.js"]
+    }}
+  }},
+  "projects": {{
+    "{workspace_key}": {{
+      "mcpServers": {{
+        "broken-project": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["{}"]
+        }}
+      }}
+    }}
+  }}
+}}
+"#,
+            broken_global.display(),
+            broken_project.display()
+        ),
+    );
+    let before = fs::read_to_string(home.join(".claude.json")).expect("read before");
+
+    let report = engine
+        .fix_unmanaged_claude_mcp(false)
+        .expect("dry run report");
+    assert!(!report.apply);
+    assert_eq!(report.removed_count, 0);
+    assert!(report.changed_files.is_empty());
+    assert_eq!(report.candidates.len(), 2);
+    assert!(report
+        .candidates
+        .iter()
+        .any(|item| item.server_key == "broken-global"));
+    assert!(report
+        .candidates
+        .iter()
+        .any(|item| item.server_key == "broken-project"));
+    assert!(!report
+        .candidates
+        .iter()
+        .any(|item| item.server_key == "managed-keep"));
+
+    let after = fs::read_to_string(home.join(".claude.json")).expect("read after");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn fix_unmanaged_claude_mcp_apply_removes_only_broken_unmanaged_entries() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let workspace_key = workspace.display().to_string();
+    let broken_global = home.join("missing").join("broken-global.js");
+    let broken_project = home.join("missing").join("broken-project.js");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::managed-keep"]
+server_key = "managed-keep"
+scope = "global"
+transport = "stdio"
+command = "node"
+args = ["/tmp/missing-managed.js"]
+[mcp_catalog."global::managed-keep".enabled_by_agent]
+codex = false
+claude = true
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(
+        &home.join(".claude.json"),
+        &format!(
+            r#"{{
+  "mcpServers": {{
+    "managed-keep": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["/tmp/missing-managed.js"]
+    }},
+    "broken-global": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["{}"]
+    }},
+    "healthy": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["relative-script.js"]
+    }}
+  }},
+  "projects": {{
+    "{workspace_key}": {{
+      "mcpServers": {{
+        "broken-project": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["{}"]
+        }},
+        "healthy-project": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["relative-project.js"]
+        }}
+      }}
+    }}
+  }}
+}}
+"#,
+            broken_global.display(),
+            broken_project.display()
+        ),
+    );
+
+    let report = engine.fix_unmanaged_claude_mcp(true).expect("apply report");
+    assert!(report.apply);
+    assert_eq!(report.removed_count, 2);
+    assert_eq!(report.changed_files.len(), 1);
+    assert!(report
+        .changed_files
+        .iter()
+        .any(|path| path == &home.join(".claude.json").display().to_string()));
+
+    let after_raw = fs::read_to_string(home.join(".claude.json")).expect("read after");
+    let after_json: JsonValue = serde_json::from_str(&after_raw).expect("parse json");
+    assert!(after_json["mcpServers"]["broken-global"].is_null());
+    assert!(
+        after_json["projects"][workspace_key.clone()]["mcpServers"]["broken-project"].is_null()
+    );
+    assert!(after_json["mcpServers"]["managed-keep"].is_object());
+    assert!(after_json["mcpServers"]["healthy"].is_object());
+    assert!(after_json["projects"][workspace_key]["mcpServers"]["healthy-project"].is_object());
+}
+
+#[test]
+#[cfg(unix)]
 fn strict_dotagents_mcp_unknown_command_does_not_fallback_to_skills() {
     let temp = TempDir::new().expect("tempdir");
     let engine = engine_in_temp(&temp);

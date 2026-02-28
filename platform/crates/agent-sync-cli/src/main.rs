@@ -90,6 +90,12 @@ enum McpCommands {
         #[arg(long, default_value = "all")]
         scope: String,
     },
+    FixUnmanagedClaude {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -230,6 +236,58 @@ fn main() -> Result<()> {
                 engine.run_dotagents_command(scope, &refs)?;
                 println!("mcp remove completed for scope={}", scope_label(scope));
             }
+            McpCommands::FixUnmanagedClaude { apply, json } => {
+                let report = engine.fix_unmanaged_claude_mcp(apply)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    if report.candidates.is_empty() {
+                        println!("No broken unmanaged Claude MCP entries found.");
+                    } else {
+                        println!(
+                            "Broken unmanaged Claude MCP entries: {}",
+                            report.candidates.len()
+                        );
+                        for candidate in &report.candidates {
+                            println!(
+                                "- {} [{}{}] {} :: {}",
+                                candidate.server_key,
+                                candidate.scope,
+                                candidate
+                                    .workspace
+                                    .as_deref()
+                                    .map(|workspace| format!(" @ {workspace}"))
+                                    .unwrap_or_default(),
+                                candidate.file_path,
+                                candidate.reason
+                            );
+                        }
+                    }
+                    if apply {
+                        println!(
+                            "Applied removal: removed {} entrie(s) across {} file(s).",
+                            report.removed_count,
+                            report.changed_files.len()
+                        );
+                        for path in &report.changed_files {
+                            println!("updated {}", path);
+                        }
+                    } else {
+                        println!(
+                            "Dry run only. Re-run with --apply to remove broken unmanaged entries."
+                        );
+                    }
+                    if !report.warnings.is_empty() {
+                        println!(
+                            "Additional warnings while inspecting: {}",
+                            report.warnings.len()
+                        );
+                        for warning in &report.warnings {
+                            println!("warning: {warning}");
+                        }
+                    }
+                }
+            }
         },
         Commands::MigrateDotagents { scope } => {
             let scope = parse_scope(&scope)?;
@@ -297,7 +355,8 @@ fn resolve_user_agents_contract_path(home_directory: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_user_agents_contract_path;
+    use super::{resolve_user_agents_contract_path, Cli, Commands, McpCommands};
+    use clap::Parser;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -342,5 +401,41 @@ mod tests {
         assert_eq!(resolved, legacy);
 
         fs::remove_dir_all(home).expect("cleanup");
+    }
+
+    #[test]
+    fn parses_mcp_fix_unmanaged_claude_default_flags() {
+        let cli = Cli::try_parse_from(["agent-sync", "mcp", "fix-unmanaged-claude"])
+            .expect("parse mcp fix command");
+        match cli.command {
+            Commands::Mcp {
+                command: McpCommands::FixUnmanagedClaude { apply, json },
+            } => {
+                assert!(!apply);
+                assert!(!json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mcp_fix_unmanaged_claude_apply_json_flags() {
+        let cli = Cli::try_parse_from([
+            "agent-sync",
+            "mcp",
+            "fix-unmanaged-claude",
+            "--apply",
+            "--json",
+        ])
+        .expect("parse mcp fix command flags");
+        match cli.command {
+            Commands::Mcp {
+                command: McpCommands::FixUnmanagedClaude { apply, json },
+            } => {
+                assert!(apply);
+                assert!(json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

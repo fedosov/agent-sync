@@ -85,11 +85,16 @@ const archivedSkill: SkillRecord = {
 function buildState(
   skills: SkillRecord[],
   mcpServers: McpServerRecord[] = [],
+  syncWarnings: string[] = [],
 ): SyncState {
+  const mcpRecordWarningCount = mcpServers.reduce(
+    (total, item) => total + item.warnings.length,
+    0,
+  );
   return {
     version: 2,
     generated_at: "2026-02-20T17:00:00Z",
-    sync: { status: "ok", error: null },
+    sync: { status: "ok", error: null, warnings: syncWarnings },
     summary: {
       global_count: skills.filter(
         (skill) => skill.scope === "global" && skill.status === "active",
@@ -99,10 +104,8 @@ function buildState(
       ).length,
       conflict_count: 0,
       mcp_count: mcpServers.length,
-      mcp_warning_count: mcpServers.reduce(
-        (total, item) => total + item.warnings.length,
-        0,
-      ),
+      mcp_warning_count:
+        syncWarnings.length > 0 ? syncWarnings.length : mcpRecordWarningCount,
     },
     subagent_summary: {
       global_count: 0,
@@ -1014,6 +1017,99 @@ describe("App quiet redesign", () => {
     expect(codexIcon).toHaveClass("text-emerald-500");
     expect(claudeIcon).toHaveClass("text-emerald-500");
     expect(projectIcon).toHaveClass("text-muted-foreground/70", "opacity-60");
+  });
+
+  it("renders sync warning banner with expandable warning list", async () => {
+    const state = buildState(
+      [projectSkill],
+      [],
+      [
+        "Broken unmanaged Claude MCP 'claude-mem' in /tmp/home/.claude.json: stdio interpreter arg path does not exist: /tmp/missing/claude-mem.js",
+        "MCP server 'exa' has inline secret-like argument '--foo_token=<redacted>'",
+      ],
+    );
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    const banner = screen.getByTestId("sync-warning-banner");
+    expect(banner).toHaveTextContent("Sync warnings (2)");
+    expect(
+      screen.queryByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show warnings" }));
+    expect(
+      screen.getByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/--foo_token=<redacted>/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide warnings" }));
+    expect(
+      screen.queryByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows merged MCP warnings from record and sync warning feed", async () => {
+    const state = buildState(
+      [projectSkill],
+      [
+        {
+          server_key: "exa",
+          scope: "project",
+          workspace: "/tmp/workspace-a",
+          transport: "http",
+          command: null,
+          args: [],
+          url: "https://mcp.exa.ai/mcp",
+          env: {},
+          enabled_by_agent: {
+            codex: true,
+            claude: true,
+            project: true,
+          },
+          targets: ["/tmp/workspace-a/.mcp.json"],
+          warnings: ["record warning: exa needs auth refresh"],
+        },
+      ],
+      [
+        "MCP server 'exa' has inline secret-like argument '--foo_token=<redacted>'",
+        "MCP server 'other' has inline secret-like argument '--bar_token=<redacted>'",
+        "MCP server global::exa2 has outdated credential hint",
+      ],
+    );
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch catalog to MCP" }),
+    );
+    await user.click(screen.getByRole("button", { name: /exa/i }));
+
+    expect(screen.getByText("Warnings")).toBeInTheDocument();
+    expect(
+      screen.getByText("record warning: exa needs auth refresh"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/MCP server 'exa' has inline secret-like argument/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/MCP server 'other' has inline secret-like argument/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /MCP server global::exa2 has outdated credential hint/i,
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("renders MCP catalog row as two lines with transport and connected agents", async () => {
