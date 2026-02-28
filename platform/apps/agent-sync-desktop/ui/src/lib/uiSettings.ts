@@ -1,7 +1,6 @@
 import type { RefreshIntervalMinutes, UiSettings } from "../types";
 
 const STORAGE_KEY = "agent-sync.ui.settings.v1";
-const LEGACY_FOCUS_KEY = "agent-sync.catalog.focusKind.v1";
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
   refreshIntervalMinutes: 0,
@@ -43,18 +42,6 @@ export function loadUiSettings(): UiSettings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      const legacyFocus = window.localStorage.getItem(LEGACY_FOCUS_KEY);
-      if (
-        legacyFocus === "skills" ||
-        legacyFocus === "subagents" ||
-        legacyFocus === "mcp" ||
-        legacyFocus === "agents"
-      ) {
-        return {
-          ...DEFAULT_UI_SETTINGS,
-          lastActiveTab: legacyFocus,
-        };
-      }
       return { ...DEFAULT_UI_SETTINGS };
     }
     return parseSettings(JSON.parse(raw));
