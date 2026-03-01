@@ -57,6 +57,10 @@ fn write_text(path: &Path, body: &str) {
     fs::write(path, body).expect("write file");
 }
 
+fn count_occurrences(body: &str, needle: &str) -> usize {
+    body.match_indices(needle).count()
+}
+
 fn dotagents_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -844,6 +848,109 @@ fn run_sync_clears_codex_subagent_managed_blocks_when_subagents_removed() {
     let after = fs::read_to_string(global_cfg).expect("global codex config after");
     assert!(after.contains("# agent-sync:subagents:begin"));
     assert!(!after.contains("[agents.reviewer]"));
+}
+
+#[test]
+fn run_sync_migrates_legacy_managed_markers_in_codex_config() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+
+    write_skill(&home.join(".agents").join("skills"), "alpha", "# Alpha");
+    write_subagent(
+        &home.join(".agents").join("subagents"),
+        "reviewer",
+        "---\nname: reviewer\ndescription: Review code\n---\n\nReviewer instructions.",
+    );
+
+    write_text(
+        &home.join(".codex").join("config.toml"),
+        r#"
+# skills-sync:begin
+[[skills.config]]
+path = "/tmp/legacy"
+enabled = true
+# skills-sync:end
+
+# skills-sync:subagents:begin
+[agents.legacy]
+description = "Legacy"
+config_file = "agents/legacy.toml"
+# skills-sync:subagents:end
+
+# skills-sync:mcp:codex:begin
+[mcp_servers.legacy]
+command = "legacy"
+# skills-sync:mcp:codex:end
+"#,
+    );
+
+    let _ = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    let raw = fs::read_to_string(home.join(".codex").join("config.toml")).expect("read codex");
+
+    assert!(!raw.contains("# skills-sync:"));
+    assert!(raw.contains("# agent-sync:begin"));
+    assert!(raw.contains("# agent-sync:subagents:begin"));
+    assert!(raw.contains("# agent-sync:mcp:codex:begin"));
+    toml::from_str::<toml::Table>(&raw).expect("valid toml");
+}
+
+#[test]
+fn run_sync_avoids_duplicate_agents_table_when_legacy_key_exists() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+
+    write_subagent(
+        &home.join(".agents").join("subagents"),
+        "reviewer",
+        "---\nname: reviewer\ndescription: Review code\n---\n\nReviewer instructions.",
+    );
+    write_text(
+        &home.join(".codex").join("config.toml"),
+        r#"
+# skills-sync:subagents:begin
+[agents.reviewer]
+description = "Legacy reviewer"
+config_file = "agents/reviewer.toml"
+# skills-sync:subagents:end
+"#,
+    );
+
+    let _ = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    let raw = fs::read_to_string(home.join(".codex").join("config.toml")).expect("read codex");
+
+    assert_eq!(count_occurrences(&raw, "[agents.reviewer]"), 1);
+    assert!(!raw.contains("# skills-sync:subagents:begin"));
+    toml::from_str::<toml::Table>(&raw).expect("valid toml");
+}
+
+#[test]
+fn run_sync_cleans_legacy_only_subagent_block_without_discovered_subagents() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+
+    write_text(
+        &home.join(".codex").join("config.toml"),
+        r#"
+# skills-sync:subagents:begin
+[agents.legacy]
+description = "Legacy"
+config_file = "agents/legacy.toml"
+# skills-sync:subagents:end
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    assert!(state.subagents.is_empty());
+
+    let raw = fs::read_to_string(home.join(".codex").join("config.toml")).expect("read codex");
+    assert!(raw.contains("# agent-sync:subagents:begin"));
+    assert!(raw.contains("# No managed subagent entries"));
+    assert!(!raw.contains("[agents.legacy]"));
+    assert!(!raw.contains("# skills-sync:subagents:begin"));
+    toml::from_str::<toml::Table>(&raw).expect("valid toml");
 }
 
 #[test]

@@ -1,6 +1,15 @@
 use crate::models::{SkillLifecycleStatus, SkillRecord};
 use std::path::Path;
 
+const AGENT_SYNC_BEGIN: &str = "# agent-sync:begin";
+const AGENT_SYNC_END: &str = "# agent-sync:end";
+const SKILLS_SYNC_BEGIN: &str = "# skills-sync:begin";
+const SKILLS_SYNC_END: &str = "# skills-sync:end";
+const SKILLS_MANAGED_MARKER_PAIRS: [(&str, &str); 2] = [
+    (AGENT_SYNC_BEGIN, AGENT_SYNC_END),
+    (SKILLS_SYNC_BEGIN, SKILLS_SYNC_END),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegistryEntry {
     path: String,
@@ -25,8 +34,8 @@ impl CodexSkillsRegistryWriter {
     pub fn new(home_directory: std::path::PathBuf) -> Self {
         Self {
             home_directory,
-            begin_marker: "# agent-sync:begin",
-            end_marker: "# agent-sync:end",
+            begin_marker: AGENT_SYNC_BEGIN,
+            end_marker: AGENT_SYNC_END,
         }
     }
 
@@ -43,7 +52,8 @@ impl CodexSkillsRegistryWriter {
                 .map_err(|e| CodexRegistryError::WriteFailed(e.to_string()))?;
         }
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-        let updated = self.upsert_managed_block(&existing, &entries);
+        let unmanaged = strip_managed_blocks(&existing, &SKILLS_MANAGED_MARKER_PAIRS);
+        let updated = self.upsert_managed_block(&unmanaged, &entries);
         std::fs::write(&config_path, updated)
             .map_err(|e| CodexRegistryError::WriteFailed(e.to_string()))
     }
@@ -144,4 +154,41 @@ fn preferred_agents_target(skill: &SkillRecord) -> Option<String> {
 
 fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn strip_managed_blocks(current: &str, marker_pairs: &[(&str, &str)]) -> String {
+    let mut normalized = current.replace("\r\n", "\n");
+    loop {
+        let mut changed = false;
+        for &(begin_marker, end_marker) in marker_pairs {
+            let next = strip_first_managed_block(&normalized, begin_marker, end_marker);
+            if next != normalized {
+                normalized = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    normalized
+}
+
+fn strip_first_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> String {
+    let normalized = current.replace("\r\n", "\n");
+    let Some(begin_index) = normalized.find(begin_marker) else {
+        return normalized;
+    };
+    let Some(end_index) = normalized[begin_index..].find(end_marker) else {
+        return normalized;
+    };
+    let end_absolute = begin_index + end_index + end_marker.len();
+    let prefix = normalized[..begin_index].trim_matches('\n');
+    let suffix = normalized[end_absolute..].trim_matches('\n');
+    match (prefix.is_empty(), suffix.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("{suffix}\n"),
+        (false, true) => format!("{prefix}\n"),
+        (false, false) => format!("{prefix}\n\n{suffix}\n"),
+    }
 }

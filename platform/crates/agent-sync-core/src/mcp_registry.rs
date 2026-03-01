@@ -11,6 +11,18 @@ const CENTRAL_BEGIN: &str = "# agent-sync:mcp:begin";
 const CENTRAL_END: &str = "# agent-sync:mcp:end";
 const CODEX_BEGIN: &str = "# agent-sync:mcp:codex:begin";
 const CODEX_END: &str = "# agent-sync:mcp:codex:end";
+const LEGACY_CENTRAL_BEGIN: &str = "# skills-sync:mcp:begin";
+const LEGACY_CENTRAL_END: &str = "# skills-sync:mcp:end";
+const LEGACY_CODEX_BEGIN: &str = "# skills-sync:mcp:codex:begin";
+const LEGACY_CODEX_END: &str = "# skills-sync:mcp:codex:end";
+const CENTRAL_MARKER_PAIRS: [(&str, &str); 2] = [
+    (CENTRAL_BEGIN, CENTRAL_END),
+    (LEGACY_CENTRAL_BEGIN, LEGACY_CENTRAL_END),
+];
+const CODEX_MARKER_PAIRS: [(&str, &str); 2] = [
+    (CODEX_BEGIN, CODEX_END),
+    (LEGACY_CODEX_BEGIN, LEGACY_CODEX_END),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum McpAgent {
@@ -1009,7 +1021,7 @@ impl McpRegistry {
             }
         };
 
-        let Some(body) = extract_managed_block(&raw, CENTRAL_BEGIN, CENTRAL_END) else {
+        let Some(body) = extract_managed_block_from_markers(&raw, &CENTRAL_MARKER_PAIRS) else {
             return Ok(BTreeMap::new());
         };
         if body.trim().is_empty() {
@@ -1121,8 +1133,9 @@ impl McpRegistry {
             fs::create_dir_all(parent).map_err(|error| SyncEngineError::io(parent, error))?;
         }
         let existing = fs::read_to_string(&path).unwrap_or_default();
+        let unmanaged = strip_managed_blocks(&existing, &CENTRAL_MARKER_PAIRS);
         let block = render_central_block(catalog);
-        let updated = upsert_managed_block(&existing, CENTRAL_BEGIN, CENTRAL_END, &block);
+        let updated = upsert_managed_block(&unmanaged, CENTRAL_BEGIN, CENTRAL_END, &block);
         if updated == existing {
             return Ok(());
         }
@@ -1149,7 +1162,7 @@ impl McpRegistry {
             }
         };
 
-        let unmanaged = strip_managed_block(&existing, CODEX_BEGIN, CODEX_END);
+        let unmanaged = strip_managed_blocks(&existing, &CODEX_MARKER_PAIRS);
         let unmanaged_keys = read_toml_server_keys_from_str(&unmanaged).unwrap_or_default();
         let mut filtered = BTreeMap::new();
         for (key, definition) in definitions {
@@ -1171,7 +1184,7 @@ impl McpRegistry {
         }
 
         let block = render_codex_block(&filtered);
-        let updated = upsert_managed_block(&existing, CODEX_BEGIN, CODEX_END, &block);
+        let updated = upsert_managed_block(&unmanaged, CODEX_BEGIN, CODEX_END, &block);
         if updated != existing {
             fs::write(path, updated).map_err(|error| SyncEngineError::io(path, error))?;
         }
@@ -2381,6 +2394,31 @@ fn extract_managed_block(current: &str, begin_marker: &str, end_marker: &str) ->
     )
 }
 
+fn extract_managed_block_from_markers(
+    current: &str,
+    marker_pairs: &[(&str, &str)],
+) -> Option<String> {
+    let mut fallback = None;
+    for &(begin_marker, end_marker) in marker_pairs {
+        if let Some(block) = extract_managed_block(current, begin_marker, end_marker) {
+            if fallback.is_none() {
+                fallback = Some(block.clone());
+            }
+            if !is_effectively_empty_managed_block(&block) {
+                return Some(block);
+            }
+        }
+    }
+    fallback
+}
+
+fn is_effectively_empty_managed_block(body: &str) -> bool {
+    body.lines().all(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || trimmed.starts_with('#')
+    })
+}
+
 fn strip_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> String {
     let normalized = current.replace("\r\n", "\n");
     let Some(begin_index) = normalized.find(begin_marker) else {
@@ -2398,6 +2436,24 @@ fn strip_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> S
         (false, true) => format!("{prefix}\n"),
         (false, false) => format!("{prefix}\n\n{suffix}\n"),
     }
+}
+
+fn strip_managed_blocks(current: &str, marker_pairs: &[(&str, &str)]) -> String {
+    let mut normalized = current.replace("\r\n", "\n");
+    loop {
+        let mut changed = false;
+        for &(begin_marker, end_marker) in marker_pairs {
+            let next = strip_managed_block(&normalized, begin_marker, end_marker);
+            if next != normalized {
+                normalized = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    normalized
 }
 
 fn upsert_managed_block(current: &str, begin_marker: &str, end_marker: &str, body: &str) -> String {
@@ -2435,7 +2491,10 @@ fn iso8601_now() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_json_servers, read_toml_servers_from_str, upsert_managed_block};
+    use super::{
+        extract_managed_block_from_markers, read_json_servers, read_toml_servers_from_str,
+        strip_managed_blocks, upsert_managed_block, CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
+    };
 
     #[test]
     fn upsert_managed_block_replaces_existing() {
@@ -2449,6 +2508,51 @@ mod tests {
         assert!(next.contains("new = true"));
         assert!(!next.contains("old = true"));
         assert!(next.contains("alpha = true"));
+    }
+
+    #[test]
+    fn strip_managed_blocks_removes_legacy_and_current_blocks() {
+        let current = "\
+before = true
+
+# skills-sync:mcp:codex:begin
+[mcp_servers.old]
+command = \"old\"
+# skills-sync:mcp:codex:end
+
+# agent-sync:mcp:codex:begin
+[mcp_servers.new]
+command = \"new\"
+# agent-sync:mcp:codex:end
+";
+
+        let stripped = strip_managed_blocks(current, &CODEX_MARKER_PAIRS);
+        assert_eq!(stripped.trim(), "before = true");
+    }
+
+    #[test]
+    fn extract_managed_block_prefers_non_empty_legacy_when_current_is_placeholder() {
+        let current = "\
+# agent-sync:mcp:begin
+# No managed MCP entries
+# agent-sync:mcp:end
+
+# skills-sync:mcp:begin
+[mcp_catalog.\"global::legacy\"]
+server_key = \"legacy\"
+scope = \"global\"
+transport = \"stdio\"
+command = \"legacy\"
+[mcp_catalog.\"global::legacy\".enabled_by_agent]
+codex = true
+claude = true
+project = false
+# skills-sync:mcp:end
+";
+
+        let block = extract_managed_block_from_markers(current, &CENTRAL_MARKER_PAIRS)
+            .expect("extract managed block");
+        assert!(block.contains("[mcp_catalog.\"global::legacy\"]"));
     }
 
     #[test]
