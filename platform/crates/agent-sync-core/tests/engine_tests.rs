@@ -2104,6 +2104,257 @@ project = false
 }
 
 #[test]
+fn run_sync_keeps_codex_disabled_servers_in_managed_block_global() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::exa"]
+scope = "global"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::exa".enabled_by_agent]
+codex = false
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(&codex_path, "\n# custom codex config\n");
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    let exa = find_mcp(&state, "exa", "global", None);
+    assert!(!exa.enabled_by_agent.codex);
+
+    let codex_raw = fs::read_to_string(codex_path).expect("read codex");
+    assert!(codex_raw.contains("[mcp_servers.exa]"));
+    assert!(codex_raw.contains("enabled = false"));
+}
+
+#[test]
+fn run_sync_keeps_codex_disabled_servers_in_managed_block_project() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    let workspace_key = workspace.display().to_string();
+    let project_codex = workspace.join(".codex").join("config.toml");
+    write_text(&project_codex, "\n# custom project codex config\n");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        &format!(
+            r#"
+# agent-sync:mcp:begin
+[mcp_catalog."project::{workspace_key}::exa"]
+project_claude_target = "workspace_mcp_json"
+scope = "project"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+workspace = "{workspace_key}"
+[mcp_catalog."project::{workspace_key}::exa".enabled_by_agent]
+codex = false
+claude = false
+project = true
+# agent-sync:mcp:end
+"#
+        ),
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    let exa = find_mcp(&state, "exa", "project", Some(&workspace_key));
+    assert!(!exa.enabled_by_agent.codex);
+
+    let codex_raw = fs::read_to_string(project_codex).expect("read project codex");
+    assert!(codex_raw.contains("[mcp_servers.exa]"));
+    assert!(codex_raw.contains("enabled = false"));
+}
+
+#[test]
+fn run_sync_auto_cleans_unmanaged_codex_when_catalog_codex_false_global() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::exa"]
+scope = "global"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::exa".enabled_by_agent]
+codex = false
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(
+        &codex_path,
+        r#"
+[mcp_servers.exa]
+command = "npx"
+args = ["-y", "mcp-remote@latest", "https://mcp.exa.ai/mcp"]
+enabled = true
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    assert!(state
+        .sync
+        .warnings
+        .iter()
+        .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+    assert!(!state
+        .sync
+        .warnings
+        .iter()
+        .any(|item| item.contains("Skipped managed Codex MCP 'exa'")));
+
+    let codex_raw = fs::read_to_string(codex_path).expect("read codex");
+    assert_eq!(count_occurrences(&codex_raw, "[mcp_servers.exa]"), 1);
+    assert!(codex_raw.contains("enabled = false"));
+}
+
+#[test]
+fn run_sync_auto_cleans_unmanaged_codex_when_catalog_codex_false_project() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    let workspace_key = workspace.display().to_string();
+    let project_codex = workspace.join(".codex").join("config.toml");
+    write_text(
+        &project_codex,
+        r#"
+[mcp_servers.exa]
+command = "npx"
+args = ["-y", "mcp-remote@latest", "https://mcp.exa.ai/mcp"]
+enabled = true
+"#,
+    );
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        &format!(
+            r#"
+# agent-sync:mcp:begin
+[mcp_catalog."project::{workspace_key}::exa"]
+project_claude_target = "workspace_mcp_json"
+scope = "project"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+workspace = "{workspace_key}"
+[mcp_catalog."project::{workspace_key}::exa".enabled_by_agent]
+codex = false
+claude = false
+project = true
+# agent-sync:mcp:end
+"#
+        ),
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    assert!(state
+        .sync
+        .warnings
+        .iter()
+        .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+
+    let codex_raw = fs::read_to_string(project_codex).expect("read project codex");
+    assert_eq!(count_occurrences(&codex_raw, "[mcp_servers.exa]"), 1);
+    assert!(codex_raw.contains("enabled = false"));
+}
+
+#[test]
+fn run_sync_auto_aligns_codex_enabled_from_managed_block() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::exa"]
+scope = "global"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::exa".enabled_by_agent]
+codex = false
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let _ = engine.run_sync(SyncTrigger::Manual).expect("first sync");
+    let mut codex_raw = fs::read_to_string(&codex_path).expect("read codex");
+    assert!(codex_raw.contains("enabled = false"));
+    codex_raw = codex_raw.replacen("enabled = false", "enabled = true", 1);
+    fs::write(&codex_path, codex_raw).expect("write codex toggled");
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("second sync");
+    let exa = find_mcp(&state, "exa", "global", None);
+    assert!(exa.enabled_by_agent.codex);
+}
+
+#[test]
+fn run_sync_auto_aligns_codex_disabled_from_managed_block() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::exa"]
+scope = "global"
+server_key = "exa"
+status = "active"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::exa".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let _ = engine.run_sync(SyncTrigger::Manual).expect("first sync");
+    let mut codex_raw = fs::read_to_string(&codex_path).expect("read codex");
+    assert!(codex_raw.contains("enabled = true"));
+    codex_raw = codex_raw.replacen("enabled = true", "enabled = false", 1);
+    fs::write(&codex_path, codex_raw).expect("write codex toggled");
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("second sync");
+    let exa = find_mcp(&state, "exa", "global", None);
+    assert!(!exa.enabled_by_agent.codex);
+}
+
+#[test]
 fn manifest_v2_is_readable_and_upgraded_to_v3_locators() {
     let temp = TempDir::new().expect("tempdir");
     let engine = engine_in_temp(&temp);
@@ -2856,10 +3107,10 @@ enabled = true
         "codex skip warning still present: {:?}",
         next.sync.warnings
     );
-    assert!(next
-        .mcp_servers
-        .iter()
-        .any(|item| item.server_key == "ahrefs" && item.scope == "global"));
+    let ahrefs = find_mcp(&next, "ahrefs", "global", None);
+    assert!(ahrefs.enabled_by_agent.codex);
+    assert!(!ahrefs.enabled_by_agent.claude);
+    assert!(!ahrefs.enabled_by_agent.project);
 }
 
 #[test]

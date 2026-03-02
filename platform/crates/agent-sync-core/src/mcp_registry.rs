@@ -148,6 +148,20 @@ struct CatalogEntry {
     archived_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CodexCatalogEntry {
+    definition: McpDefinition,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedCodexObserved {
+    catalog_id: String,
+    server_key: String,
+    enabled: bool,
+    file_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SourceKind {
     CodexGlobal,
@@ -233,6 +247,8 @@ struct McpManifest {
     generated_at: String,
     #[serde(default)]
     targets: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    codex_enabled: BTreeMap<String, bool>,
 }
 
 pub struct McpRegistry {
@@ -272,6 +288,13 @@ impl McpRegistry {
             }
         }
         self.reconcile_claude_enabled(&mut catalog, &discovered, &previous_manifest, &mut warnings);
+        let observed_codex = self.load_managed_codex_observed(workspaces, &mut warnings);
+        self.reconcile_codex_enabled(
+            &mut catalog,
+            &observed_codex,
+            &previous_manifest,
+            &mut warnings,
+        );
 
         self.write_central_catalog(&catalog)?;
 
@@ -279,16 +302,15 @@ impl McpRegistry {
             version: 3,
             generated_at: iso8601_now(),
             targets: BTreeMap::new(),
+            codex_enabled: BTreeMap::new(),
         };
 
         let global_codex_path = self.codex_config_path();
-        let global_codex_defs = definitions_for_entries(
+        let global_codex_entries = codex_entries_for_catalog(
             catalog
                 .values()
                 .filter(|item| {
-                    item.scope == McpScope::Global
-                        && item.enabled_by_agent.codex
-                        && item.status == SkillLifecycleStatus::Active
+                    item.scope == McpScope::Global && item.status == SkillLifecycleStatus::Active
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -296,13 +318,25 @@ impl McpRegistry {
         );
         let global_codex_keys = self.apply_codex_catalog_path(
             &global_codex_path,
-            &global_codex_defs,
+            &global_codex_entries,
             true,
             &mut warnings,
         )?;
         new_manifest
             .targets
             .insert(global_codex_path.display().to_string(), global_codex_keys);
+        append_manifest_codex_enabled(
+            &mut new_manifest.codex_enabled,
+            McpScope::Global,
+            None,
+            &global_codex_entries,
+            new_manifest
+                .targets
+                .get(&global_codex_path.display().to_string())
+                .cloned()
+                .unwrap_or_default()
+                .as_slice(),
+        );
 
         let global_claude_target = self.effective_global_claude_target_path();
         let claude_user_path = self.claude_user_config_path();
@@ -436,7 +470,7 @@ impl McpRegistry {
                 .get(&project_codex_path.display().to_string())
                 .cloned()
                 .unwrap_or_default();
-            let project_codex_defs = definitions_for_entries(
+            let project_codex_entries = codex_entries_for_catalog(
                 catalog
                     .values()
                     .filter(|item| {
@@ -444,23 +478,36 @@ impl McpRegistry {
                             && item.status == SkillLifecycleStatus::Active
                             && item.workspace.as_deref() == Some(workspace_key.as_str())
                             && item.enabled_by_agent.project
-                            && item.enabled_by_agent.codex
                     })
                     .cloned()
                     .collect::<Vec<_>>()
                     .as_slice(),
             );
+            let project_has_enabled_codex_entries =
+                project_codex_entries.values().any(|item| item.enabled);
             if project_codex_path.exists() {
                 let keys = self.apply_codex_catalog_path(
                     &project_codex_path,
-                    &project_codex_defs,
+                    &project_codex_entries,
                     false,
                     &mut warnings,
                 )?;
                 new_manifest
                     .targets
                     .insert(project_codex_path.display().to_string(), keys);
-            } else if !project_codex_defs.is_empty() || !previous_project_codex_keys.is_empty() {
+                append_manifest_codex_enabled(
+                    &mut new_manifest.codex_enabled,
+                    McpScope::Project,
+                    Some(workspace_key.as_str()),
+                    &project_codex_entries,
+                    new_manifest
+                        .targets
+                        .get(&project_codex_path.display().to_string())
+                        .cloned()
+                        .unwrap_or_default()
+                        .as_slice(),
+                );
+            } else if project_has_enabled_codex_entries || !previous_project_codex_keys.is_empty() {
                 warnings.push(format!(
                     "Skipped project MCP target {} because file does not exist",
                     project_codex_path.display()
@@ -901,7 +948,11 @@ impl McpRegistry {
             )));
         };
 
-        let mut enabled = McpEnabledByAgent::default();
+        let mut enabled = McpEnabledByAgent {
+            codex: false,
+            claude: false,
+            project: false,
+        };
         for item in &related {
             if item.entry.enabled_by_agent.codex && item.enabled {
                 enabled.codex = true;
@@ -1205,6 +1256,119 @@ impl McpRegistry {
                 "Auto-aligned MCP '{}' ({}) with observed Claude enabled state from {}",
                 existing.server_key,
                 existing.catalog_id,
+                item.file_path.display()
+            ));
+        }
+    }
+
+    fn load_managed_codex_observed(
+        &self,
+        workspaces: &[PathBuf],
+        warnings: &mut Vec<String>,
+    ) -> BTreeMap<String, ManagedCodexObserved> {
+        let mut observed = BTreeMap::new();
+        let global_path = self.codex_config_path();
+        self.collect_managed_codex_observed_for_path(
+            &global_path,
+            McpScope::Global,
+            None,
+            &mut observed,
+            warnings,
+        );
+        for workspace in workspaces {
+            let project_path = workspace.join(".codex").join("config.toml");
+            if !project_path.exists() {
+                continue;
+            }
+            let workspace_key = workspace.display().to_string();
+            self.collect_managed_codex_observed_for_path(
+                &project_path,
+                McpScope::Project,
+                Some(workspace_key.as_str()),
+                &mut observed,
+                warnings,
+            );
+        }
+        observed
+    }
+
+    fn collect_managed_codex_observed_for_path(
+        &self,
+        path: &Path,
+        scope: McpScope,
+        workspace: Option<&str>,
+        observed: &mut BTreeMap<String, ManagedCodexObserved>,
+        warnings: &mut Vec<String>,
+    ) {
+        let raw = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    warnings.push(format!(
+                        "Failed to read Codex MCP config {}: {error}",
+                        path.display()
+                    ));
+                }
+                return;
+            }
+        };
+        let Some(body) = extract_managed_block_from_markers(&raw, &CODEX_MARKER_PAIRS) else {
+            return;
+        };
+        let servers = match read_toml_servers_from_str(body.trim()) {
+            Ok(items) => items,
+            Err(error) => {
+                warnings.push(format!(
+                    "Failed to parse managed Codex MCP block {}: {error}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        for (server_key, _definition, enabled) in servers {
+            let catalog_id = make_catalog_id(scope, workspace, &server_key);
+            observed.insert(
+                catalog_id.clone(),
+                ManagedCodexObserved {
+                    catalog_id,
+                    server_key,
+                    enabled,
+                    file_path: path.to_path_buf(),
+                },
+            );
+        }
+    }
+
+    fn reconcile_codex_enabled(
+        &self,
+        catalog: &mut BTreeMap<String, CatalogEntry>,
+        observed: &BTreeMap<String, ManagedCodexObserved>,
+        previous_manifest: &McpManifest,
+        warnings: &mut Vec<String>,
+    ) {
+        for item in observed.values() {
+            let Some(existing) = catalog.get_mut(&item.catalog_id) else {
+                continue;
+            };
+            if existing.status != SkillLifecycleStatus::Active {
+                continue;
+            }
+            let locator = locator_for_entry(existing);
+            let Some(previous_enabled) = previous_manifest.codex_enabled.get(&locator) else {
+                continue;
+            };
+            if *previous_enabled == item.enabled {
+                continue;
+            }
+            if existing.enabled_by_agent.codex == item.enabled {
+                continue;
+            }
+            existing.enabled_by_agent.codex = item.enabled;
+            warnings.push(format!(
+                "Auto-aligned MCP '{}' ({}) with observed Codex enabled={} from {}",
+                item.server_key,
+                item.catalog_id,
+                item.enabled,
                 item.file_path.display()
             ));
         }
@@ -1751,7 +1915,7 @@ impl McpRegistry {
     fn apply_codex_catalog_path(
         &self,
         path: &Path,
-        definitions: &BTreeMap<String, McpDefinition>,
+        entries: &BTreeMap<String, CodexCatalogEntry>,
         create_when_missing: bool,
         warnings: &mut Vec<String>,
     ) -> Result<Vec<String>, SyncEngineError> {
@@ -1769,10 +1933,33 @@ impl McpRegistry {
         };
 
         let unmanaged = strip_managed_blocks(&existing, &CODEX_MARKER_PAIRS);
-        let unmanaged_keys = read_toml_server_keys_from_str(&unmanaged).unwrap_or_default();
+        let mut unmanaged_table = parse_unmanaged_codex_table(&unmanaged, path, warnings);
+        let mut unmanaged_changed = false;
         let mut filtered = BTreeMap::new();
-        for (key, definition) in definitions {
-            if unmanaged_keys.contains(key) {
+        for (key, entry) in entries {
+            let has_unmanaged_duplicate = unmanaged_table
+                .as_ref()
+                .map(|table| unmanaged_codex_contains_server(table, key))
+                .unwrap_or(false);
+            if !entry.enabled {
+                if has_unmanaged_duplicate
+                    && unmanaged_table
+                        .as_mut()
+                        .map(|table| unmanaged_codex_remove_server(table, key))
+                        .unwrap_or(false)
+                {
+                    unmanaged_changed = true;
+                    warnings.push(format!(
+                        "Auto-cleaned unmanaged Codex MCP '{}' because managed entry is disabled in {}",
+                        key,
+                        path.display()
+                    ));
+                }
+                filtered.insert(key.clone(), entry.clone());
+                continue;
+            }
+
+            if has_unmanaged_duplicate {
                 warnings.push(format!(
                     "Skipped managed Codex MCP '{}' because unmanaged entry already exists in {}",
                     key,
@@ -1780,7 +1967,7 @@ impl McpRegistry {
                 ));
                 continue;
             }
-            filtered.insert(key.clone(), definition.clone());
+            filtered.insert(key.clone(), entry.clone());
         }
 
         if let Some(parent) = path.parent() {
@@ -1789,8 +1976,18 @@ impl McpRegistry {
             }
         }
 
+        let unmanaged_for_merge = if unmanaged_changed {
+            render_unmanaged_codex_table(
+                unmanaged_table
+                    .as_ref()
+                    .expect("unmanaged table is present"),
+                path,
+            )?
+        } else {
+            unmanaged
+        };
         let block = render_codex_block(&filtered);
-        let updated = upsert_managed_block(&unmanaged, CODEX_BEGIN, CODEX_END, &block);
+        let updated = upsert_managed_block(&unmanaged_for_merge, CODEX_BEGIN, CODEX_END, &block);
         if updated != existing {
             fs::write(path, updated).map_err(|error| SyncEngineError::io(path, error))?;
         }
@@ -2425,6 +2622,22 @@ fn append_manifest_targets(
     entry.sort();
 }
 
+fn append_manifest_codex_enabled(
+    codex_enabled: &mut BTreeMap<String, bool>,
+    scope: McpScope,
+    workspace: Option<&str>,
+    entries: &BTreeMap<String, CodexCatalogEntry>,
+    written_keys: &[String],
+) {
+    for key in written_keys {
+        let Some(entry) = entries.get(key) else {
+            continue;
+        };
+        let locator = make_catalog_id(scope, workspace, key);
+        codex_enabled.insert(locator, entry.enabled);
+    }
+}
+
 fn locator_for_entry(entry: &CatalogEntry) -> String {
     match entry.scope {
         McpScope::Global => format!("global::{}", entry.server_key),
@@ -2550,10 +2763,16 @@ fn was_previously_managed_claude_locator(manifest: &McpManifest, locator: &str) 
     false
 }
 
-fn definitions_for_entries(entries: &[CatalogEntry]) -> BTreeMap<String, McpDefinition> {
+fn codex_entries_for_catalog(entries: &[CatalogEntry]) -> BTreeMap<String, CodexCatalogEntry> {
     let mut definitions = BTreeMap::new();
     for item in entries {
-        definitions.insert(item.server_key.clone(), item.definition.clone());
+        definitions.insert(
+            item.server_key.clone(),
+            CodexCatalogEntry {
+                definition: item.definition.clone(),
+                enabled: item.enabled_by_agent.codex,
+            },
+        );
     }
     definitions
 }
@@ -2768,12 +2987,65 @@ fn read_toml_servers_from_str(raw: &str) -> Result<Vec<(String, McpDefinition, b
     Ok(result)
 }
 
-fn read_toml_server_keys_from_str(raw: &str) -> Result<HashSet<String>, String> {
-    let servers = read_toml_servers_from_str(raw)?;
-    Ok(servers
-        .into_iter()
-        .map(|(key, _, _)| key)
-        .collect::<HashSet<_>>())
+fn parse_unmanaged_codex_table(
+    unmanaged: &str,
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<toml::Table> {
+    if unmanaged.trim().is_empty() {
+        return Some(toml::Table::new());
+    }
+    match toml::from_str::<toml::Table>(unmanaged) {
+        Ok(table) => Some(table),
+        Err(error) => {
+            warnings.push(format!(
+                "Failed to parse unmanaged Codex MCP block {}: {error}",
+                path.display()
+            ));
+            None
+        }
+    }
+}
+
+fn unmanaged_codex_contains_server(table: &toml::Table, server_key: &str) -> bool {
+    table
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .and_then(|servers| servers.get(server_key))
+        .is_some()
+}
+
+fn unmanaged_codex_remove_server(table: &mut toml::Table, server_key: &str) -> bool {
+    let removed = table
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+        .map(|servers| servers.remove(server_key).is_some())
+        .unwrap_or(false);
+    if table
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|servers| servers.is_empty())
+    {
+        table.remove("mcp_servers");
+    }
+    removed
+}
+
+fn render_unmanaged_codex_table(
+    table: &toml::Table,
+    path: &Path,
+) -> Result<String, SyncEngineError> {
+    if table.is_empty() {
+        return Ok(String::new());
+    }
+    toml::to_string(table)
+        .map_err(|error| {
+            SyncEngineError::Unsupported(format!(
+                "failed to render unmanaged codex MCP block for {}: {error}",
+                path.display()
+            ))
+        })
+        .map(|value| value.trim_end().to_string())
 }
 
 fn definition_from_toml_table(table: &toml::value::Table) -> McpDefinition {
@@ -2997,13 +3269,14 @@ fn render_central_block(catalog: &BTreeMap<String, CatalogEntry>) -> String {
         .to_string()
 }
 
-fn render_codex_block(definitions: &BTreeMap<String, McpDefinition>) -> String {
-    if definitions.is_empty() {
+fn render_codex_block(entries: &BTreeMap<String, CodexCatalogEntry>) -> String {
+    if entries.is_empty() {
         return "# No managed MCP entries".to_string();
     }
 
     let mut servers = toml::Table::new();
-    for (key, definition) in definitions {
+    for (key, item) in entries {
+        let definition = &item.definition;
         let mut entry = toml::Table::new();
         if let Some(command) = &definition.command {
             entry.insert("command".into(), toml::Value::String(command.clone()));
@@ -3023,7 +3296,7 @@ fn render_codex_block(definitions: &BTreeMap<String, McpDefinition>) -> String {
         if let Some(url) = &definition.url {
             entry.insert("url".into(), toml::Value::String(url.clone()));
         }
-        entry.insert("enabled".into(), toml::Value::Boolean(true));
+        entry.insert("enabled".into(), toml::Value::Boolean(item.enabled));
         if !definition.env.is_empty() {
             let mut env_table = toml::Table::new();
             for (env_key, env_value) in &definition.env {
@@ -3247,9 +3520,9 @@ fn iso8601_now() -> String {
 mod tests {
     use super::{
         extract_managed_block_from_markers, read_json_servers, read_toml_servers_from_str,
-        render_central_block, strip_managed_blocks, upsert_managed_block, CatalogEntry,
-        McpDefinition, McpRegistry, McpScope, ProjectClaudeTarget, CENTRAL_BEGIN, CENTRAL_END,
-        CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
+        render_central_block, render_codex_block, strip_managed_blocks, upsert_managed_block,
+        CatalogEntry, CodexCatalogEntry, McpDefinition, McpRegistry, McpScope, ProjectClaudeTarget,
+        CENTRAL_BEGIN, CENTRAL_END, CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
     };
     use crate::models::{
         CatalogMutationAction, McpEnabledByAgent, McpTransport, SkillLifecycleStatus,
@@ -3275,6 +3548,10 @@ mod tests {
         );
         std::fs::create_dir_all(config_path.parent().expect("parent")).expect("mkdir parent");
         std::fs::write(&config_path, wrapped).expect("write central catalog");
+    }
+
+    fn count_occurrences(body: &str, needle: &str) -> usize {
+        body.match_indices(needle).count()
     }
 
     #[test]
@@ -3356,6 +3633,76 @@ API_KEY = "${API_KEY}"
             items[0].1.env.get("API_KEY").map(String::as_str),
             Some("${API_KEY}")
         );
+    }
+
+    #[test]
+    fn render_codex_block_respects_enabled_flag() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            String::from("exa"),
+            CodexCatalogEntry {
+                definition: McpDefinition {
+                    transport: McpTransport::Stdio,
+                    command: Some(String::from("npx")),
+                    args: vec![String::from("-y"), String::from("mcp-remote@latest")],
+                    url: None,
+                    env: BTreeMap::new(),
+                },
+                enabled: false,
+            },
+        );
+        let rendered = render_codex_block(&entries);
+        assert!(rendered.contains("[mcp_servers.exa]"));
+        assert!(rendered.contains("enabled = false"));
+    }
+
+    #[test]
+    fn apply_codex_catalog_path_auto_cleans_unmanaged_for_disabled_entry() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+        let codex_path = home.join(".codex").join("config.toml");
+        std::fs::create_dir_all(codex_path.parent().expect("parent")).expect("mkdir parent");
+        std::fs::write(
+            &codex_path,
+            r#"
+[mcp_servers.exa]
+command = "npx"
+args = ["-y", "mcp-remote@latest", "https://mcp.exa.ai/mcp"]
+enabled = true
+"#,
+        )
+        .expect("write codex");
+
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            String::from("exa"),
+            CodexCatalogEntry {
+                definition: McpDefinition {
+                    transport: McpTransport::Stdio,
+                    command: Some(String::from("npx")),
+                    args: vec![
+                        String::from("-y"),
+                        String::from("mcp-remote@latest"),
+                        String::from("https://mcp.exa.ai/mcp"),
+                    ],
+                    url: None,
+                    env: BTreeMap::new(),
+                },
+                enabled: false,
+            },
+        );
+
+        let mut warnings = Vec::new();
+        let keys = registry
+            .apply_codex_catalog_path(&codex_path, &entries, true, &mut warnings)
+            .expect("apply codex");
+        assert_eq!(keys, vec![String::from("exa")]);
+        assert!(warnings
+            .iter()
+            .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+
+        let codex_raw = std::fs::read_to_string(&codex_path).expect("read codex");
+        assert_eq!(count_occurrences(&codex_raw, "[mcp_servers.exa]"), 1);
+        assert!(codex_raw.contains("enabled = false"));
     }
 
     #[test]
