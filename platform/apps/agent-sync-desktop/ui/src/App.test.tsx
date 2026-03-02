@@ -1377,10 +1377,14 @@ describe("App quiet redesign", () => {
       screen.getByText("Will add server to managed MCP list"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Will replace inline secret with env variable"),
+      screen.getByText(
+        "Will replace inline secret with env variable (env must be set first)",
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Will replace secret argument with env variable"),
+      screen.getByText(
+        "Will replace secret argument with env variable (env must be set first)",
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Will remove duplicate unmanaged Codex entry"),

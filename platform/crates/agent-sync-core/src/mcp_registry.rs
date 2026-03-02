@@ -939,6 +939,12 @@ impl McpRegistry {
         server_key: &str,
         env_key: &str,
     ) -> Result<(), SyncEngineError> {
+        if !is_non_empty_env_var(env_key) {
+            return Err(SyncEngineError::Unsupported(format!(
+                "cannot fix inline secret env warning for '{server_key}': environment variable '{env_key}' is missing or empty"
+            )));
+        }
+
         let mut warnings = Vec::new();
         let mut catalog = self.load_central_catalog(&mut warnings)?;
         let mut updated_count = 0usize;
@@ -985,6 +991,18 @@ impl McpRegistry {
         server_key: &str,
         redacted_argument: &str,
     ) -> Result<(), SyncEngineError> {
+        let Some((arg_key, _)) = redacted_argument.split_once('=') else {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (inline secret argument is malformed): server={server_key}, arg={redacted_argument}"
+            )));
+        };
+        let env_key = secret_arg_env_key(arg_key);
+        if !is_non_empty_env_var(&env_key) {
+            return Err(SyncEngineError::Unsupported(format!(
+                "cannot fix inline secret argument warning for '{server_key}': environment variable '{env_key}' is missing or empty"
+            )));
+        }
+
         let mut warnings = Vec::new();
         let mut catalog = self.load_central_catalog(&mut warnings)?;
         let mut updated_count = 0usize;
@@ -1003,7 +1021,6 @@ impl McpRegistry {
                 let Some((arg_key, _)) = arg.split_once('=') else {
                     continue;
                 };
-                let env_key = secret_arg_env_key(arg_key);
                 *arg = format!("{arg_key}=${{{env_key}}}");
                 updated_count += 1;
             }
@@ -3047,6 +3064,12 @@ fn detect_inline_secret_warnings(server_key: &str, definition: &McpDefinition) -
         }
     }
     warnings
+}
+
+fn is_non_empty_env_var(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn is_secret_like_key(key: &str) -> bool {

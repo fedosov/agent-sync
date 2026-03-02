@@ -87,6 +87,18 @@ fn set_env_var_with_restore(key: &'static str, value: &Path) -> EnvVarRestore {
     EnvVarRestore { key, previous }
 }
 
+fn set_env_value_with_restore(key: &'static str, value: &str) -> EnvVarRestore {
+    let previous = std::env::var_os(key);
+    std::env::set_var(key, value);
+    EnvVarRestore { key, previous }
+}
+
+fn unset_env_var_with_restore(key: &'static str) -> EnvVarRestore {
+    let previous = std::env::var_os(key);
+    std::env::remove_var(key);
+    EnvVarRestore { key, previous }
+}
+
 fn find_skill(
     engine: &SyncEngine,
     skill_key: &str,
@@ -2851,7 +2863,7 @@ enabled = true
 }
 
 #[test]
-fn fix_sync_warning_rewrites_inline_secret_env_values() {
+fn fix_sync_warning_fails_for_inline_secret_env_when_env_var_missing() {
     let temp = TempDir::new().expect("tempdir");
     let engine = engine_in_temp(&temp);
     let home = engine.environment().home_directory.clone();
@@ -2885,6 +2897,70 @@ project = false
         .expect("inline env warning")
         .clone();
 
+    let central_before = fs::read_to_string(&central_path).expect("read central before");
+    let _env_lock = dotagents_env_lock().lock().expect("lock env");
+    let _env_guard = unset_env_var_with_restore("HOME_ASSISTANT_TOKEN");
+    let error = engine
+        .fix_sync_warning(&warning)
+        .expect_err("fix should fail without env var");
+    assert!(
+        error.to_string().contains("HOME_ASSISTANT_TOKEN"),
+        "error should mention missing env variable: {error}"
+    );
+
+    let central_after = fs::read_to_string(&central_path).expect("read central after");
+    assert_eq!(
+        central_after, central_before,
+        "central config should remain unchanged when env is missing"
+    );
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        next.sync.warnings.iter().any(|item| {
+            item.contains("inline secret-like env value for 'HOME_ASSISTANT_TOKEN'")
+        }),
+        "inline env warning should remain when fix fails: {:?}",
+        next.sync.warnings
+    );
+}
+
+#[test]
+fn fix_sync_warning_rewrites_inline_secret_env_values_when_env_var_is_set() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let central_path = home.join(".config").join("ai-agents").join("config.toml");
+
+    write_text(
+        &central_path,
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::home-automation"]
+server_key = "home-automation"
+scope = "global"
+transport = "http"
+url = "http://localhost:8123/mcp"
+[mcp_catalog."global::home-automation".env]
+HOME_ASSISTANT_TOKEN = "super-secret-token"
+[mcp_catalog."global::home-automation".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| item.contains("inline secret-like env value for 'HOME_ASSISTANT_TOKEN'"))
+        .expect("inline env warning")
+        .clone();
+
+    let _env_lock = dotagents_env_lock().lock().expect("lock env");
+    let _env_guard = set_env_value_with_restore("HOME_ASSISTANT_TOKEN", "token-from-env");
     engine
         .fix_sync_warning(&warning)
         .expect("fix inline secret warning");
@@ -2906,7 +2982,7 @@ project = false
 }
 
 #[test]
-fn fix_sync_warning_rewrites_inline_secret_argument_values() {
+fn fix_sync_warning_fails_for_inline_secret_argument_when_env_var_missing() {
     let temp = TempDir::new().expect("tempdir");
     let engine = engine_in_temp(&temp);
     let home = engine.environment().home_directory.clone();
@@ -2939,6 +3015,69 @@ project = false
         .expect("inline arg warning")
         .clone();
 
+    let central_before = fs::read_to_string(&central_path).expect("read central before");
+    let _env_lock = dotagents_env_lock().lock().expect("lock env");
+    let _env_guard = unset_env_var_with_restore("CLARITY_API_TOKEN");
+    let error = engine
+        .fix_sync_warning(&warning)
+        .expect_err("fix should fail without env var");
+    assert!(
+        error.to_string().contains("CLARITY_API_TOKEN"),
+        "error should mention missing env variable: {error}"
+    );
+
+    let central_after = fs::read_to_string(&central_path).expect("read central after");
+    assert_eq!(
+        central_after, central_before,
+        "central config should remain unchanged when env is missing"
+    );
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        next.sync.warnings.iter().any(|item| {
+            item.contains("inline secret-like argument '--clarity_api_token=<redacted>'")
+        }),
+        "inline argument warning should remain when fix fails: {:?}",
+        next.sync.warnings
+    );
+}
+
+#[test]
+fn fix_sync_warning_rewrites_inline_secret_argument_values_when_env_var_is_set() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let central_path = home.join(".config").join("ai-agents").join("config.toml");
+
+    write_text(
+        &central_path,
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::clarity"]
+server_key = "clarity"
+scope = "global"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@microsoft/clarity-mcp", "--clarity_api_token=super-secret-token"]
+[mcp_catalog."global::clarity".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| item.contains("inline secret-like argument '--clarity_api_token=<redacted>'"))
+        .expect("inline arg warning")
+        .clone();
+
+    let _env_lock = dotagents_env_lock().lock().expect("lock env");
+    let _env_guard = set_env_value_with_restore("CLARITY_API_TOKEN", "token-from-env");
     engine
         .fix_sync_warning(&warning)
         .expect("fix inline secret argument warning");

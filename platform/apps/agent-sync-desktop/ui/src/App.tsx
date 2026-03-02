@@ -162,14 +162,14 @@ function syncWarningFixSummary(warning: string): string | null {
     warning.includes("' has inline secret-like env value for '") &&
     warning.endsWith("'")
   ) {
-    return "Will replace inline secret with env variable";
+    return "Will replace inline secret with env variable (env must be set first)";
   }
   if (
     warning.startsWith("MCP server '") &&
     warning.includes("' has inline secret-like argument '") &&
     warning.endsWith("'")
   ) {
-    return "Will replace secret argument with env variable";
+    return "Will replace secret argument with env variable (env must be set first)";
   }
   if (
     warning.startsWith("Skipped managed Codex MCP '") &&
