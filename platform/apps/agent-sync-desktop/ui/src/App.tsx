@@ -23,6 +23,7 @@ import {
   openSkillPath,
   renameSkill,
   migrateDotagents,
+  fixSyncWarning,
   runDotagentsSync,
   runSync,
   setAllowFilesystemChanges,
@@ -124,6 +125,69 @@ function warningMentionsServer(warning: string, serverKey: string): boolean {
     warning.includes(`"${serverKey}"`) ||
     catalogIdPattern.test(warning)
   );
+}
+
+function renderSyncWarningText(warning: string) {
+  const term = "central catalog";
+  const replacement = "Central Catalog (~/.config/ai-agents/config.toml)";
+  const index = warning.indexOf(term);
+  if (index === -1) {
+    return warning;
+  }
+
+  const before = warning.slice(0, index);
+  const after = warning.slice(index + term.length);
+  return (
+    <>
+      {before}
+      <code className="font-mono text-[11px]">{replacement}</code>
+      {after}
+    </>
+  );
+}
+
+function syncWarningFixSummary(warning: string): string | null {
+  if (warning.startsWith("Broken unmanaged Claude MCP '")) {
+    return "Will remove broken unmanaged Claude entry";
+  }
+  if (
+    warning.startsWith("MCP server '") &&
+    warning.includes(" exists in ") &&
+    warning.endsWith(" but is unmanaged in central catalog")
+  ) {
+    return "Will add server to managed MCP list";
+  }
+  if (
+    warning.startsWith("MCP server '") &&
+    warning.includes("' has inline secret-like env value for '") &&
+    warning.endsWith("'")
+  ) {
+    return "Will replace inline secret with env variable";
+  }
+  if (
+    warning.startsWith("MCP server '") &&
+    warning.includes("' has inline secret-like argument '") &&
+    warning.endsWith("'")
+  ) {
+    return "Will replace secret argument with env variable";
+  }
+  if (
+    warning.startsWith("Skipped managed Codex MCP '") &&
+    warning.includes("' because unmanaged entry already exists in ")
+  ) {
+    return "Will remove duplicate unmanaged Codex entry";
+  }
+  if (
+    warning.startsWith("Skipped project MCP target ") &&
+    warning.endsWith(" because file does not exist")
+  ) {
+    return "Will create missing project MCP file";
+  }
+  return null;
+}
+
+function isFixableSyncWarning(warning: string): boolean {
+  return syncWarningFixSummary(warning) !== null;
 }
 
 function formatIsoTime(value: string): string {
@@ -249,6 +313,9 @@ export function App() {
   );
   const [dotagentsNeedsMigration, setDotagentsNeedsMigration] = useState(false);
   const [syncWarningsExpanded, setSyncWarningsExpanded] = useState(false);
+  const [fixingSyncWarning, setFixingSyncWarning] = useState<string | null>(
+    null,
+  );
 
   const applyState = useCallback(
     (next: SyncState, preferredKey?: string | null) => {
@@ -776,6 +843,29 @@ export function App() {
     await refreshState(selectedSkillKey, true);
   }
 
+  async function handleFixSyncWarning(warning: string) {
+    if (!runtimeControls?.allow_filesystem_changes) {
+      setError(
+        "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.",
+      );
+      return;
+    }
+    if (busy || fixingSyncWarning) {
+      return;
+    }
+
+    setFixingSyncWarning(warning);
+    setError(null);
+    try {
+      await fixSyncWarning(warning);
+      await refreshState(selectedSkillKey, true);
+    } catch (invokeError) {
+      setError(String(invokeError));
+    } finally {
+      setFixingSyncWarning(null);
+    }
+  }
+
   async function verifyDotagents(withBusy: boolean) {
     if (withBusy) {
       setBusy(true);
@@ -1115,7 +1205,7 @@ export function App() {
             className="shrink-0 border-amber-500/40 bg-amber-500/10"
             data-testid="sync-warning-banner"
           >
-            <CardContent className="space-y-2 p-2 text-xs text-amber-800 dark:text-amber-200">
+            <CardContent className="space-y-2 p-2 text-xs text-foreground">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-medium">
                   {`Sync warnings (${syncWarnings.length})`}
@@ -1135,9 +1225,36 @@ export function App() {
                   {syncWarnings.map((warning) => (
                     <li
                       key={warning}
-                      className="rounded-md bg-amber-500/15 p-2"
+                      className="rounded-md border border-amber-600/35 bg-amber-500/15 p-2 text-foreground"
                     >
-                      {warning}
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 flex-1 break-words">
+                          {renderSyncWarningText(warning)}
+                        </span>
+                        {isFixableSyncWarning(warning) ? (
+                          <div className="flex shrink-0 items-center gap-2 pl-2">
+                            <span className="max-w-[220px] text-right text-[11px] font-medium leading-tight text-foreground/90">
+                              {syncWarningFixSummary(warning)}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-6 shrink-0 border-amber-600/45 bg-card/70 px-2 text-[11px] text-foreground hover:bg-amber-500/20"
+                              disabled={
+                                busy ||
+                                !runtimeControls?.allow_filesystem_changes ||
+                                fixingSyncWarning !== null
+                              }
+                              onClick={() => void handleFixSyncWarning(warning)}
+                            >
+                              {fixingSyncWarning === warning
+                                ? "Fixing..."
+                                : "Fix"}
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
                     </li>
                   ))}
                 </ul>

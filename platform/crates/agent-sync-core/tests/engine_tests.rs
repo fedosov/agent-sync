@@ -2643,6 +2643,455 @@ project = false
 }
 
 #[test]
+fn fix_unmanaged_claude_mcp_warning_apply_removes_only_matching_warning() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("workspace-a");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let workspace_key = workspace.display().to_string();
+    let broken_global = home.join("missing").join("broken-global.js");
+    let broken_project = home.join("missing").join("broken-project.js");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::managed-keep"]
+server_key = "managed-keep"
+scope = "global"
+transport = "stdio"
+command = "node"
+args = ["/tmp/missing-managed.js"]
+[mcp_catalog."global::managed-keep".enabled_by_agent]
+codex = false
+claude = true
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+    write_text(
+        &home.join(".claude.json"),
+        &format!(
+            r#"{{
+  "mcpServers": {{
+    "managed-keep": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["/tmp/missing-managed.js"]
+    }},
+    "broken-global": {{
+      "type": "stdio",
+      "command": "node",
+      "args": ["{}"]
+    }}
+  }},
+  "projects": {{
+    "{workspace_key}": {{
+      "mcpServers": {{
+        "broken-project": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["{}"]
+        }},
+        "healthy-project": {{
+          "type": "stdio",
+          "command": "node",
+          "args": ["relative-project.js"]
+        }}
+      }}
+    }}
+  }}
+}}
+"#,
+            broken_global.display(),
+            broken_project.display()
+        ),
+    );
+
+    let initial_state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning_to_fix = initial_state
+        .sync
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("Broken unmanaged Claude MCP 'broken-global'"))
+        .expect("broken-global warning")
+        .clone();
+
+    let report = engine
+        .fix_unmanaged_claude_mcp_warning(&warning_to_fix, true)
+        .expect("targeted apply report");
+    assert!(report.apply);
+    assert_eq!(report.removed_count, 1);
+    assert_eq!(report.changed_files.len(), 1);
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].server_key, "broken-global");
+
+    let after_raw = fs::read_to_string(home.join(".claude.json")).expect("read after");
+    let after_json: JsonValue = serde_json::from_str(&after_raw).expect("parse json");
+    assert!(after_json["mcpServers"]["broken-global"].is_null());
+    assert!(
+        after_json["projects"][workspace_key.clone()]["mcpServers"]["broken-project"].is_object()
+    );
+    assert!(after_json["projects"][workspace_key]["mcpServers"]["healthy-project"].is_object());
+
+    let next_state = engine.run_sync(SyncTrigger::Manual).expect("next sync");
+    assert!(
+        !next_state
+            .sync
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Broken unmanaged Claude MCP 'broken-global'")),
+        "broken-global warning should be removed: {:?}",
+        next_state.sync.warnings
+    );
+    assert!(
+        next_state
+            .sync
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Broken unmanaged Claude MCP 'broken-project'")),
+        "broken-project warning should remain: {:?}",
+        next_state.sync.warnings
+    );
+}
+
+#[test]
+fn fix_unmanaged_claude_mcp_warning_returns_error_for_stale_warning() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+
+    let error = engine
+        .fix_unmanaged_claude_mcp_warning(
+            "Broken unmanaged Claude MCP 'missing' in /tmp/nope.json: stdio command path does not exist: /tmp/nope.js",
+            true,
+        )
+        .expect_err("stale warning should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("not a fixable broken unmanaged Claude MCP warning"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn fix_sync_warning_adopts_unmanaged_codex_entry_into_central_catalog() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_config_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::managed-exa"]
+server_key = "managed-exa"
+scope = "global"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::managed-exa".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    write_text(
+        &codex_config_path,
+        r#"
+[mcp_servers."ahrefs"]
+command = "npx"
+args = ["-y", "ahrefs-mcp"]
+enabled = true
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| {
+            item.contains("global::ahrefs") && item.contains("unmanaged in central catalog")
+        })
+        .expect("unmanaged warning")
+        .clone();
+
+    engine
+        .fix_sync_warning(&warning)
+        .expect("fix unmanaged warning");
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        !next
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("global::ahrefs")
+                && item.contains("unmanaged in central catalog")),
+        "unmanaged warning still present: {:?}",
+        next.sync.warnings
+    );
+    assert!(
+        !next
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("Skipped managed Codex MCP 'ahrefs'")),
+        "codex skip warning still present: {:?}",
+        next.sync.warnings
+    );
+    assert!(next
+        .mcp_servers
+        .iter()
+        .any(|item| item.server_key == "ahrefs" && item.scope == "global"));
+}
+
+#[test]
+fn fix_sync_warning_rewrites_inline_secret_env_values() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let central_path = home.join(".config").join("ai-agents").join("config.toml");
+
+    write_text(
+        &central_path,
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::home-automation"]
+server_key = "home-automation"
+scope = "global"
+transport = "http"
+url = "http://localhost:8123/mcp"
+[mcp_catalog."global::home-automation".env]
+HOME_ASSISTANT_TOKEN = "super-secret-token"
+[mcp_catalog."global::home-automation".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| item.contains("inline secret-like env value for 'HOME_ASSISTANT_TOKEN'"))
+        .expect("inline env warning")
+        .clone();
+
+    engine
+        .fix_sync_warning(&warning)
+        .expect("fix inline secret warning");
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        !next.sync.warnings.iter().any(|item| {
+            item.contains("inline secret-like env value for 'HOME_ASSISTANT_TOKEN'")
+        }),
+        "inline env warning still present: {:?}",
+        next.sync.warnings
+    );
+
+    let central_after = fs::read_to_string(&central_path).expect("read central");
+    assert!(
+        central_after.contains("HOME_ASSISTANT_TOKEN = \"${HOME_ASSISTANT_TOKEN}\""),
+        "central config should be rewritten with env interpolation:\n{central_after}"
+    );
+}
+
+#[test]
+fn fix_sync_warning_rewrites_inline_secret_argument_values() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let central_path = home.join(".config").join("ai-agents").join("config.toml");
+
+    write_text(
+        &central_path,
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::clarity"]
+server_key = "clarity"
+scope = "global"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@microsoft/clarity-mcp", "--clarity_api_token=super-secret-token"]
+[mcp_catalog."global::clarity".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| item.contains("inline secret-like argument '--clarity_api_token=<redacted>'"))
+        .expect("inline arg warning")
+        .clone();
+
+    engine
+        .fix_sync_warning(&warning)
+        .expect("fix inline secret argument warning");
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        !next
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item
+                .contains("inline secret-like argument '--clarity_api_token=<redacted>'")),
+        "inline argument warning still present: {:?}",
+        next.sync.warnings
+    );
+
+    let central_after = fs::read_to_string(&central_path).expect("read central");
+    assert!(
+        central_after.contains("--clarity_api_token=${CLARITY_API_TOKEN}"),
+        "central config should rewrite secret argument with env variable:\n{central_after}"
+    );
+}
+
+#[test]
+fn fix_sync_warning_removes_unmanaged_codex_entry_that_blocks_managed_sync() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let codex_config_path = home.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::jina-mcp-tools"]
+server_key = "jina-mcp-tools"
+scope = "global"
+transport = "http"
+url = "https://example.com/mcp"
+[mcp_catalog."global::jina-mcp-tools".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    write_text(
+        &codex_config_path,
+        r#"
+[mcp_servers."jina-mcp-tools"]
+command = "npx"
+args = ["-y", "jina-mcp-tools"]
+enabled = true
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| item.contains("Skipped managed Codex MCP 'jina-mcp-tools'"))
+        .expect("skipped codex warning")
+        .clone();
+
+    engine
+        .fix_sync_warning(&warning)
+        .expect("fix skipped codex warning");
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        !next
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("Skipped managed Codex MCP 'jina-mcp-tools'")),
+        "skipped codex warning still present: {:?}",
+        next.sync.warnings
+    );
+
+    let codex_after = fs::read_to_string(&codex_config_path).expect("read codex");
+    assert_eq!(
+        count_occurrences(&codex_after, "[mcp_servers.\"jina-mcp-tools\"]"),
+        1
+    );
+}
+
+#[test]
+fn fix_sync_warning_creates_missing_project_target_file() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+    let workspace = home.join("Dev").join("geo-taxes");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_text(&workspace.join(".mcp.json"), "{}\n");
+    let workspace_key = workspace.display().to_string();
+    let missing_target = workspace.join(".codex").join("config.toml");
+
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        &format!(
+            r#"
+# agent-sync:mcp:begin
+[mcp_catalog."project::{workspace_key}::playwright"]
+server_key = "playwright"
+scope = "project"
+workspace = "{workspace_key}"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@playwright/mcp"]
+[mcp_catalog."project::{workspace_key}::playwright".enabled_by_agent]
+codex = true
+claude = false
+project = true
+# agent-sync:mcp:end
+"#
+        ),
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("initial sync");
+    let warning = state
+        .sync
+        .warnings
+        .iter()
+        .find(|item| {
+            item.contains("Skipped project MCP target")
+                && item.contains(&missing_target.display().to_string())
+                && item.contains("because file does not exist")
+        })
+        .expect("missing project target warning")
+        .clone();
+
+    engine
+        .fix_sync_warning(&warning)
+        .expect("fix missing project target warning");
+    assert!(missing_target.exists(), "expected target to be created");
+
+    let next = engine.run_sync(SyncTrigger::Manual).expect("post-fix sync");
+    assert!(
+        !next
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("Skipped project MCP target")
+                && item.contains(&missing_target.display().to_string())
+                && item.contains("because file does not exist")),
+        "missing target warning should be removed: {:?}",
+        next.sync.warnings
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn strict_dotagents_mcp_unknown_command_does_not_fallback_to_skills() {
     let temp = TempDir::new().expect("tempdir");

@@ -56,6 +56,10 @@ export async function runSync(): Promise<SyncState> {
   return invoke<SyncState>("run_sync", { trigger: "manual" });
 }
 
+export async function fixSyncWarning(warning: string): Promise<void> {
+  return invoke<void>("fix_sync_warning", { warning });
+}
+
 export async function runDotagentsSync(
   scope: DotagentsScope = "all",
 ): Promise<void> {

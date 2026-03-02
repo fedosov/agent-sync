@@ -599,6 +599,28 @@ impl SyncEngine {
         registry.fix_unmanaged_claude_mcp(&workspaces, apply)
     }
 
+    pub fn fix_unmanaged_claude_mcp_warning(
+        &self,
+        warning: &str,
+        apply: bool,
+    ) -> Result<UnmanagedClaudeMcpFixReport, SyncEngineError> {
+        let workspaces = self.workspace_candidates();
+        let registry = McpRegistry::new(
+            self.environment.home_directory.clone(),
+            self.environment.runtime_directory.clone(),
+        );
+        registry.fix_unmanaged_claude_mcp_warning(&workspaces, warning, apply)
+    }
+
+    pub fn fix_sync_warning(&self, warning: &str) -> Result<(), SyncEngineError> {
+        let workspaces = self.workspace_candidates();
+        let registry = McpRegistry::new(
+            self.environment.home_directory.clone(),
+            self.environment.runtime_directory.clone(),
+        );
+        registry.fix_sync_warning(&workspaces, warning)
+    }
+
     pub fn watch_paths(&self) -> Vec<PathBuf> {
         let mut paths = default_watch_paths(&self.environment.home_directory);
         let workspaces = self.workspace_candidates();

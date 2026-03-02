@@ -34,6 +34,7 @@ vi.mock("./tauriApi", () => ({
   getStarredSkillIds: vi.fn(),
   setSkillStarred: vi.fn(),
   setMcpServerEnabled: vi.fn(),
+  fixSyncWarning: vi.fn(),
 }));
 
 let clipboardWriteSpy: ReturnType<typeof vi.fn>;
@@ -283,6 +284,7 @@ function setApiDefaults(
   vi.mocked(tauriApi.openSubagentPath).mockResolvedValue(undefined);
   vi.mocked(tauriApi.setSkillStarred).mockResolvedValue([]);
   vi.mocked(tauriApi.setMcpServerEnabled).mockResolvedValue(state);
+  vi.mocked(tauriApi.fixSyncWarning).mockResolvedValue(undefined);
   vi.mocked(tauriApi.getSkillDetails).mockImplementation((skillKey) => {
     const details = detailsBySkillKey[skillKey];
     if (!details) {
@@ -1277,20 +1279,167 @@ describe("App quiet redesign", () => {
 
     const banner = screen.getByTestId("sync-warning-banner");
     expect(banner).toHaveTextContent("Sync warnings (2)");
+    expect(banner).toHaveClass("border-amber-500/40", "bg-amber-500/10");
     expect(
       screen.queryByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show warnings" }));
-    expect(
-      screen.getByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
-    ).toBeInTheDocument();
+    const brokenWarning = screen.getByText(
+      /Broken unmanaged Claude MCP 'claude-mem'/i,
+    );
+    expect(brokenWarning.closest("li")).toHaveClass("text-foreground");
+    expect(brokenWarning).toBeInTheDocument();
     expect(screen.getByText(/--foo_token=<redacted>/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Hide warnings" }));
     expect(
       screen.queryByText(/Broken unmanaged Claude MCP 'claude-mem'/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows per-row Fix for supported sync warning kinds and invokes clicked-row fix action", async () => {
+    const brokenWarning =
+      "Broken unmanaged Claude MCP 'claude-mem' in /tmp/home/.claude.json: stdio interpreter arg path does not exist: /tmp/missing/claude-mem.js";
+    const unmanagedWarning =
+      "MCP server 'ahrefs' (global::ahrefs) exists in /tmp/home/.codex/config.toml but is unmanaged in central catalog";
+    const inlineEnvWarning =
+      "MCP server 'home-automation' has inline secret-like env value for 'HOME_ASSISTANT_TOKEN'";
+    const inlineArgWarning =
+      "MCP server 'clarity' has inline secret-like argument '--clarity_api_token=<redacted>'";
+    const skippedCodexWarning =
+      "Skipped managed Codex MCP 'jina-mcp-tools' because unmanaged entry already exists in /tmp/home/.codex/config.toml";
+    const skippedProjectTargetWarning =
+      "Skipped project MCP target /tmp/workspace-a/.codex/config.toml because file does not exist";
+    const nonFixableWarning =
+      "MCP server 'exa' has unsupported transport config";
+    const state = buildState(
+      [projectSkill],
+      [],
+      [
+        brokenWarning,
+        unmanagedWarning,
+        inlineEnvWarning,
+        inlineArgWarning,
+        skippedCodexWarning,
+        skippedProjectTargetWarning,
+        nonFixableWarning,
+      ],
+    );
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.getRuntimeControls).mockResolvedValue({
+      allow_filesystem_changes: true,
+      auto_watch_active: false,
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(screen.getByRole("button", { name: "Show warnings" }));
+    const renderedCentralCatalog =
+      "Central Catalog (~/.config/ai-agents/config.toml)";
+    const findRowByWarning = (warning: string) =>
+      screen.getAllByRole("listitem").find((item) => {
+        const normalized = warning.replace(
+          "central catalog",
+          renderedCentralCatalog,
+        );
+        return (
+          item.textContent?.includes(warning) ||
+          item.textContent?.includes(normalized)
+        );
+      }) ?? null;
+
+    for (const warning of [
+      brokenWarning,
+      unmanagedWarning,
+      inlineEnvWarning,
+      inlineArgWarning,
+      skippedCodexWarning,
+      skippedProjectTargetWarning,
+    ]) {
+      const row = findRowByWarning(warning);
+      expect(row).not.toBeNull();
+      const scope = row ?? document.body;
+      expect(
+        within(scope).getByRole("button", {
+          name: "Fix",
+        }),
+      ).toBeInTheDocument();
+    }
+    expect(
+      screen.getByText("Will remove broken unmanaged Claude entry"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Will add server to managed MCP list"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Will replace inline secret with env variable"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Will replace secret argument with env variable"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Will remove duplicate unmanaged Codex entry"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Will create missing project MCP file"),
+    ).toBeInTheDocument();
+
+    const nonFixableRow = findRowByWarning(nonFixableWarning);
+    expect(nonFixableRow).not.toBeNull();
+    const nonFixableScope = nonFixableRow ?? document.body;
+    expect(
+      within(nonFixableScope).queryByRole("button", { name: "Fix" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(nonFixableScope).queryByText(/Will /),
+    ).not.toBeInTheDocument();
+
+    const clickedRow = findRowByWarning(unmanagedWarning);
+    expect(clickedRow).not.toBeNull();
+    const centralCatalogTerm = within(clickedRow ?? document.body).getByText(
+      renderedCentralCatalog,
+    );
+    expect(centralCatalogTerm.tagName.toLowerCase()).toBe("code");
+    expect(centralCatalogTerm).toHaveClass("font-mono");
+    await user.click(
+      within(clickedRow ?? document.body).getByRole("button", { name: "Fix" }),
+    );
+
+    expect(tauriApi.fixSyncWarning).toHaveBeenCalledWith(unmanagedWarning);
+    expect(tauriApi.runSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Fix action when filesystem changes are disabled", async () => {
+    const fixableWarning =
+      "Broken unmanaged Claude MCP 'claude-mem' in /tmp/home/.claude.json: stdio interpreter arg path does not exist: /tmp/missing/claude-mem.js";
+    const state = buildState([projectSkill], [], [fixableWarning]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.getRuntimeControls).mockResolvedValue({
+      allow_filesystem_changes: false,
+      auto_watch_active: false,
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.click(screen.getByRole("button", { name: "Show warnings" }));
+
+    const row = screen.getByText(fixableWarning).closest("li");
+    expect(row).not.toBeNull();
+    const scope = row ?? document.body;
+    const fixButton = within(scope).getByRole("button", { name: "Fix" });
+    expect(fixButton).toBeDisabled();
+    await user.click(fixButton);
+
+    expect(tauriApi.fixSyncWarning).not.toHaveBeenCalled();
   });
 
   it("shows merged MCP warnings from record and sync warning feed", async () => {

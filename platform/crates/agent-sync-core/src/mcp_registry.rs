@@ -186,6 +186,30 @@ enum ClaudeJsonTargetLocation {
     Project { workspace: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WarningFixAction {
+    UnmanagedInCentral {
+        server_key: String,
+        catalog_id: String,
+        file_path: String,
+    },
+    InlineSecretEnv {
+        server_key: String,
+        env_key: String,
+    },
+    InlineSecretArgument {
+        server_key: String,
+        redacted_argument: String,
+    },
+    SkippedManagedCodex {
+        server_key: String,
+        file_path: String,
+    },
+    SkippedMissingProjectTarget {
+        file_path: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct JsonWritePlan {
     path: PathBuf,
@@ -242,12 +266,7 @@ impl McpRegistry {
                         item.file_path.display()
                     ));
                     if let Some(candidate) = build_broken_unmanaged_claude_candidate(item) {
-                        warnings.push(format!(
-                            "Broken unmanaged Claude MCP '{}' in {}: {}",
-                            candidate.output.server_key,
-                            candidate.output.file_path,
-                            candidate.output.reason
-                        ));
+                        warnings.push(format_broken_unmanaged_claude_warning(&candidate.output));
                     }
                 }
             }
@@ -747,6 +766,387 @@ impl McpRegistry {
             changed_files,
             warnings,
         })
+    }
+
+    pub fn fix_unmanaged_claude_mcp_warning(
+        &self,
+        workspaces: &[PathBuf],
+        warning: &str,
+        apply: bool,
+    ) -> Result<UnmanagedClaudeMcpFixReport, SyncEngineError> {
+        let mut warnings = Vec::new();
+        let discovered = self.discover_all(workspaces, &mut warnings);
+        let catalog = self.load_central_catalog(&mut warnings)?;
+        let candidates = collect_broken_unmanaged_claude_candidates(&discovered, &catalog);
+        let targeted = candidates
+            .into_iter()
+            .filter(|candidate| {
+                format_broken_unmanaged_claude_warning(&candidate.output) == warning
+            })
+            .collect::<Vec<_>>();
+
+        if targeted.is_empty() {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is not a fixable broken unmanaged Claude MCP warning: {warning}"
+            )));
+        }
+
+        let mut removed_count = 0usize;
+        let mut changed_files = Vec::new();
+        if apply {
+            let outcome = self.remove_broken_unmanaged_claude_entries(&targeted, &mut warnings)?;
+            removed_count = outcome.removed_count;
+            changed_files = outcome.changed_files;
+        }
+
+        warnings.sort();
+        warnings.dedup();
+
+        Ok(UnmanagedClaudeMcpFixReport {
+            apply,
+            candidates: targeted.into_iter().map(|item| item.output).collect(),
+            removed_count,
+            changed_files,
+            warnings,
+        })
+    }
+
+    pub fn fix_sync_warning(
+        &self,
+        workspaces: &[PathBuf],
+        warning: &str,
+    ) -> Result<(), SyncEngineError> {
+        if warning.starts_with("Broken unmanaged Claude MCP '") {
+            self.fix_unmanaged_claude_mcp_warning(workspaces, warning, true)
+                .map(|_| ())?;
+            return Ok(());
+        }
+
+        let Some(action) = parse_warning_fix_action(warning) else {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is not fixable: {warning}"
+            )));
+        };
+
+        match action {
+            WarningFixAction::UnmanagedInCentral {
+                server_key,
+                catalog_id,
+                file_path,
+            } => self.fix_unmanaged_in_central_warning(
+                workspaces,
+                &server_key,
+                &catalog_id,
+                &file_path,
+            ),
+            WarningFixAction::InlineSecretEnv {
+                server_key,
+                env_key,
+            } => self.fix_inline_secret_env_warning(&server_key, &env_key),
+            WarningFixAction::InlineSecretArgument {
+                server_key,
+                redacted_argument,
+            } => self.fix_inline_secret_argument_warning(&server_key, &redacted_argument),
+            WarningFixAction::SkippedManagedCodex {
+                server_key,
+                file_path,
+            } => self.fix_skipped_managed_codex_warning(&server_key, &file_path),
+            WarningFixAction::SkippedMissingProjectTarget { file_path } => {
+                self.fix_missing_project_target_warning(&file_path)
+            }
+        }
+    }
+
+    fn fix_unmanaged_in_central_warning(
+        &self,
+        workspaces: &[PathBuf],
+        server_key: &str,
+        catalog_id: &str,
+        file_path: &str,
+    ) -> Result<(), SyncEngineError> {
+        let mut warnings = Vec::new();
+        let discovered = self.discover_all(workspaces, &mut warnings);
+        let mut catalog = self.load_central_catalog(&mut warnings)?;
+        if catalog.contains_key(catalog_id) {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (catalog entry already exists): {catalog_id}"
+            )));
+        }
+
+        let matched = discovered
+            .iter()
+            .find(|item| {
+                item.entry.server_key == server_key
+                    && item.entry.catalog_id == catalog_id
+                    && item.file_path.display().to_string() == file_path
+            })
+            .ok_or_else(|| {
+                SyncEngineError::Unsupported(format!(
+                    "warning is stale (matching unmanaged MCP entry not found): {server_key} ({catalog_id})"
+                ))
+            })?;
+
+        let mut related = discovered
+            .iter()
+            .filter(|item| item.entry.catalog_id == catalog_id)
+            .collect::<Vec<_>>();
+        related.sort_by(|lhs, rhs| {
+            source_priority(lhs.source)
+                .cmp(&source_priority(rhs.source))
+                .then_with(|| lhs.source.cmp(&rhs.source))
+        });
+        let Some(primary) = related.first() else {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (related unmanaged MCP entries not found): {catalog_id}"
+            )));
+        };
+
+        let mut enabled = McpEnabledByAgent::default();
+        for item in &related {
+            if item.entry.enabled_by_agent.codex && item.enabled {
+                enabled.codex = true;
+            }
+            if item.entry.enabled_by_agent.claude && item.enabled {
+                enabled.claude = true;
+            }
+            if item.entry.enabled_by_agent.project && item.enabled {
+                enabled.project = true;
+            }
+        }
+        if primary.entry.scope == McpScope::Global {
+            enabled.project = false;
+        }
+
+        let mut entry = primary.entry.clone();
+        entry.enabled_by_agent = enabled;
+        entry.status = SkillLifecycleStatus::Active;
+        entry.archived_at = None;
+        catalog.insert(entry.catalog_id.clone(), entry);
+        self.write_central_catalog(&catalog)?;
+
+        if matches!(
+            matched.source,
+            SourceKind::CodexGlobal | SourceKind::ProjectCodex
+        ) {
+            self.remove_unmanaged_codex_server_entry(&matched.file_path, server_key)?;
+        }
+
+        Ok(())
+    }
+
+    fn fix_inline_secret_env_warning(
+        &self,
+        server_key: &str,
+        env_key: &str,
+    ) -> Result<(), SyncEngineError> {
+        let mut warnings = Vec::new();
+        let mut catalog = self.load_central_catalog(&mut warnings)?;
+        let mut updated_count = 0usize;
+
+        for entry in catalog.values_mut() {
+            if entry.server_key != server_key {
+                continue;
+            }
+            let Some(value) = entry.definition.env.get_mut(env_key) else {
+                continue;
+            };
+            if value.starts_with("${") {
+                continue;
+            }
+            *value = format!("${{{env_key}}}");
+            updated_count += 1;
+        }
+
+        if updated_count == 0 {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (inline secret env key not found): server={server_key}, key={env_key}"
+            )));
+        }
+
+        self.write_central_catalog(&catalog)
+    }
+
+    fn fix_skipped_managed_codex_warning(
+        &self,
+        server_key: &str,
+        file_path: &str,
+    ) -> Result<(), SyncEngineError> {
+        let removed = self.remove_unmanaged_codex_server_entry(Path::new(file_path), server_key)?;
+        if !removed {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (unmanaged codex MCP entry not found): {server_key} in {file_path}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn fix_inline_secret_argument_warning(
+        &self,
+        server_key: &str,
+        redacted_argument: &str,
+    ) -> Result<(), SyncEngineError> {
+        let mut warnings = Vec::new();
+        let mut catalog = self.load_central_catalog(&mut warnings)?;
+        let mut updated_count = 0usize;
+
+        for entry in catalog.values_mut() {
+            if entry.server_key != server_key {
+                continue;
+            }
+            for arg in &mut entry.definition.args {
+                let Some(redacted) = redact_secret_like_arg(arg) else {
+                    continue;
+                };
+                if redacted != redacted_argument {
+                    continue;
+                }
+                let Some((arg_key, _)) = arg.split_once('=') else {
+                    continue;
+                };
+                let env_key = secret_arg_env_key(arg_key);
+                *arg = format!("{arg_key}=${{{env_key}}}");
+                updated_count += 1;
+            }
+        }
+
+        if updated_count == 0 {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (inline secret argument not found): server={server_key}, arg={redacted_argument}"
+            )));
+        }
+
+        self.write_central_catalog(&catalog)
+    }
+
+    fn fix_missing_project_target_warning(&self, file_path: &str) -> Result<(), SyncEngineError> {
+        let path = Path::new(file_path);
+        if path.exists() {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning is stale (project MCP target already exists): {file_path}"
+            )));
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+
+        let workspace = if file_name == "config.toml" {
+            let codex_dir = path.parent().ok_or_else(|| {
+                SyncEngineError::Unsupported(format!(
+                    "warning target path is invalid (missing parent): {file_path}"
+                ))
+            })?;
+            if codex_dir.file_name().and_then(|value| value.to_str()) != Some(".codex") {
+                return Err(SyncEngineError::Unsupported(format!(
+                    "warning target path is unsupported for auto-fix: {file_path}"
+                )));
+            }
+            codex_dir.parent().ok_or_else(|| {
+                SyncEngineError::Unsupported(format!(
+                    "warning target path is invalid (missing workspace): {file_path}"
+                ))
+            })?
+        } else if file_name == ".mcp.json" {
+            path.parent().ok_or_else(|| {
+                SyncEngineError::Unsupported(format!(
+                    "warning target path is invalid (missing workspace): {file_path}"
+                ))
+            })?
+        } else {
+            return Err(SyncEngineError::Unsupported(format!(
+                "warning target path is unsupported for auto-fix: {file_path}"
+            )));
+        };
+
+        if !workspace.exists() {
+            return Err(SyncEngineError::Unsupported(format!(
+                "workspace does not exist for target path: {}",
+                workspace.display()
+            )));
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| SyncEngineError::io(parent, error))?;
+        }
+
+        if file_name == ".mcp.json" {
+            fs::write(path, "{\n  \"mcpServers\": {}\n}\n")
+                .map_err(|error| SyncEngineError::io(path, error))?;
+        } else {
+            fs::write(path, "").map_err(|error| SyncEngineError::io(path, error))?;
+        }
+        Ok(())
+    }
+
+    fn remove_unmanaged_codex_server_entry(
+        &self,
+        path: &Path,
+        server_key: &str,
+    ) -> Result<bool, SyncEngineError> {
+        let existing = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(false);
+                }
+                return Err(SyncEngineError::io(path, error));
+            }
+        };
+
+        let unmanaged = strip_managed_blocks(&existing, &CODEX_MARKER_PAIRS);
+        let mut table = if unmanaged.trim().is_empty() {
+            toml::Table::new()
+        } else {
+            toml::from_str::<toml::Table>(&unmanaged).map_err(|error| {
+                SyncEngineError::Unsupported(format!(
+                    "invalid unmanaged codex MCP block in {}: {error}",
+                    path.display()
+                ))
+            })?
+        };
+
+        let removed = table
+            .get_mut("mcp_servers")
+            .and_then(toml::Value::as_table_mut)
+            .map(|servers| servers.remove(server_key).is_some())
+            .unwrap_or(false);
+        if !removed {
+            return Ok(false);
+        }
+
+        if table
+            .get("mcp_servers")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|servers| servers.is_empty())
+        {
+            table.remove("mcp_servers");
+        }
+
+        let unmanaged_rendered = if table.is_empty() {
+            String::new()
+        } else {
+            toml::to_string(&table).map_err(|error| {
+                SyncEngineError::Unsupported(format!(
+                    "failed to render unmanaged codex MCP block for {}: {error}",
+                    path.display()
+                ))
+            })?
+        };
+
+        let updated = if let Some(body) =
+            extract_managed_block_from_markers(&existing, &CODEX_MARKER_PAIRS)
+        {
+            upsert_managed_block(&unmanaged_rendered, CODEX_BEGIN, CODEX_END, body.trim())
+        } else {
+            unmanaged_rendered
+        };
+
+        if updated != existing {
+            fs::write(path, updated).map_err(|error| SyncEngineError::io(path, error))?;
+        }
+
+        Ok(true)
     }
 
     fn effective_global_claude_target_path(&self) -> PathBuf {
@@ -1775,6 +2175,92 @@ fn collect_broken_unmanaged_claude_candidates(
     result
 }
 
+fn format_broken_unmanaged_claude_warning(candidate: &UnmanagedClaudeMcpCandidate) -> String {
+    format!(
+        "Broken unmanaged Claude MCP '{}' in {}: {}",
+        candidate.server_key, candidate.file_path, candidate.reason
+    )
+}
+
+fn parse_warning_fix_action(warning: &str) -> Option<WarningFixAction> {
+    parse_unmanaged_in_central_warning(warning)
+        .or_else(|| parse_inline_secret_env_warning(warning))
+        .or_else(|| parse_inline_secret_argument_warning(warning))
+        .or_else(|| parse_skipped_managed_codex_warning(warning))
+        .or_else(|| parse_skipped_missing_project_target_warning(warning))
+}
+
+fn parse_unmanaged_in_central_warning(warning: &str) -> Option<WarningFixAction> {
+    let (server_key, rest) = warning.strip_prefix("MCP server '")?.split_once("' (")?;
+    let (catalog_id, rest) = rest.split_once(") exists in ")?;
+    let file_path = rest.strip_suffix(" but is unmanaged in central catalog")?;
+
+    if server_key.trim().is_empty() || catalog_id.trim().is_empty() || file_path.trim().is_empty() {
+        return None;
+    }
+
+    Some(WarningFixAction::UnmanagedInCentral {
+        server_key: server_key.to_string(),
+        catalog_id: catalog_id.to_string(),
+        file_path: file_path.to_string(),
+    })
+}
+
+fn parse_inline_secret_env_warning(warning: &str) -> Option<WarningFixAction> {
+    let (server_key, rest) = warning
+        .strip_prefix("MCP server '")?
+        .split_once("' has inline secret-like env value for '")?;
+    let env_key = rest.strip_suffix('\'')?;
+    if server_key.trim().is_empty() || env_key.trim().is_empty() {
+        return None;
+    }
+
+    Some(WarningFixAction::InlineSecretEnv {
+        server_key: server_key.to_string(),
+        env_key: env_key.to_string(),
+    })
+}
+
+fn parse_skipped_managed_codex_warning(warning: &str) -> Option<WarningFixAction> {
+    let (server_key, file_path) = warning
+        .strip_prefix("Skipped managed Codex MCP '")?
+        .split_once("' because unmanaged entry already exists in ")?;
+    if server_key.trim().is_empty() || file_path.trim().is_empty() {
+        return None;
+    }
+
+    Some(WarningFixAction::SkippedManagedCodex {
+        server_key: server_key.to_string(),
+        file_path: file_path.to_string(),
+    })
+}
+
+fn parse_inline_secret_argument_warning(warning: &str) -> Option<WarningFixAction> {
+    let (server_key, rest) = warning
+        .strip_prefix("MCP server '")?
+        .split_once("' has inline secret-like argument '")?;
+    let redacted_argument = rest.strip_suffix('\'')?;
+    if server_key.trim().is_empty() || redacted_argument.trim().is_empty() {
+        return None;
+    }
+    Some(WarningFixAction::InlineSecretArgument {
+        server_key: server_key.to_string(),
+        redacted_argument: redacted_argument.to_string(),
+    })
+}
+
+fn parse_skipped_missing_project_target_warning(warning: &str) -> Option<WarningFixAction> {
+    let file_path = warning
+        .strip_prefix("Skipped project MCP target ")?
+        .strip_suffix(" because file does not exist")?;
+    if file_path.trim().is_empty() {
+        return None;
+    }
+    Some(WarningFixAction::SkippedMissingProjectTarget {
+        file_path: file_path.to_string(),
+    })
+}
+
 fn build_broken_unmanaged_claude_candidate(
     item: &Discovered,
 ) -> Option<BrokenUnmanagedClaudeCandidate> {
@@ -2496,13 +2982,13 @@ fn render_codex_block(definitions: &BTreeMap<String, McpDefinition>) -> String {
         if let Some(url) = &definition.url {
             lines.push(format!("url = \"{}\"", toml_escape(url)));
         }
+        lines.push(String::from("enabled = true"));
         if !definition.env.is_empty() {
             lines.push(format!("[mcp_servers.\"{}\".env]", toml_escape(key)));
             for (env_key, env_value) in &definition.env {
                 lines.push(format!("{} = \"{}\"", env_key, toml_escape(env_value)));
             }
         }
-        lines.push(String::from("enabled = true"));
         lines.push(String::new());
     }
     while lines.last().is_some_and(|line| line.is_empty()) {
@@ -2554,6 +3040,29 @@ fn redact_secret_like_arg(arg: &str) -> Option<String> {
         return None;
     }
     Some(format!("{key}=<redacted>"))
+}
+
+fn secret_arg_env_key(arg_key: &str) -> String {
+    let trimmed = arg_key.trim_start_matches('-');
+    let mut value = String::new();
+    let mut last_underscore = false;
+
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() {
+            value.push(ch.to_ascii_uppercase());
+            last_underscore = false;
+        } else if !last_underscore {
+            value.push('_');
+            last_underscore = true;
+        }
+    }
+
+    let normalized = value.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        String::from("SECRET")
+    } else {
+        normalized
+    }
 }
 
 fn source_label(source: SourceKind) -> &'static str {

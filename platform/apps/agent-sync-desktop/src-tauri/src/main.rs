@@ -734,6 +734,20 @@ fn set_mcp_server_enabled(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn fix_sync_warning(warning: String, runtime: tauri::State<RuntimeState>) -> Result<(), String> {
+    let engine = SyncEngine::current();
+    ensure_write_allowed(&engine, "fix_sync_warning")?;
+    let _guard = runtime
+        .sync_lock
+        .lock()
+        .map_err(|_| String::from("internal lock error"))?;
+    engine
+        .fix_sync_warning(&warning)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn mutate_catalog_item_inner(
     request: CatalogMutationRequestPayload,
     action_name: &str,
@@ -1323,6 +1337,7 @@ fn main() {
             migrate_dotagents,
             get_mcp_servers,
             set_mcp_server_enabled,
+            fix_sync_warning,
             mutate_catalog_item,
             delete_skill,
             archive_skill,
