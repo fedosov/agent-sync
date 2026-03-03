@@ -1,3 +1,4 @@
+use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -141,7 +142,7 @@ impl CodexSubagentRegistryWriter {
                 body_lines.push(role_toml);
             }
 
-            let updated = self.upsert_managed_block(&unmanaged, &body_lines.join("\n"));
+            let updated = self.upsert_managed_subagent_block(&unmanaged, &body_lines.join("\n"));
             toml::from_str::<toml::Table>(&updated).map_err(|error| {
                 CodexSubagentRegistryError::WriteFailed(format!(
                     "generated invalid TOML for {}: {error}",
@@ -226,36 +227,13 @@ impl CodexSubagentRegistryWriter {
             .map_err(|e| CodexSubagentRegistryError::WriteFailed(e.to_string()))
     }
 
-    fn upsert_managed_block(&self, current: &str, body: &str) -> String {
-        let mut block = vec![self.begin_marker.to_string()];
-        if body.trim().is_empty() {
-            block.push("# No managed subagent entries".to_string());
+    fn upsert_managed_subagent_block(&self, current: &str, body: &str) -> String {
+        let effective_body = if body.trim().is_empty() {
+            "# No managed subagent entries".to_string()
         } else {
-            block.push(body.to_string());
-        }
-        block.push(self.end_marker.to_string());
-        let block = block.join("\n");
-        if current.trim().is_empty() {
-            return format!("{block}\n");
-        }
-
-        let normalized = current.replace("\r\n", "\n");
-        if let Some(begin_index) = normalized.find(self.begin_marker) {
-            if let Some(end_index) = normalized[begin_index..].find(self.end_marker) {
-                let end_absolute = begin_index + end_index + self.end_marker.len();
-                let prefix = normalized[..begin_index].trim_matches('\n');
-                let suffix = normalized[end_absolute..].trim_matches('\n');
-                return match (prefix.is_empty(), suffix.is_empty()) {
-                    (true, true) => format!("{block}\n"),
-                    (true, false) => format!("{block}\n\n{suffix}\n"),
-                    (false, true) => format!("{prefix}\n\n{block}\n"),
-                    (false, false) => format!("{prefix}\n\n{block}\n\n{suffix}\n"),
-                };
-            }
-        }
-
-        let trimmed = normalized.trim_matches('\n');
-        format!("{trimmed}\n\n{block}\n")
+            body.to_string()
+        };
+        upsert_managed_block(current, self.begin_marker, self.end_marker, &effective_body)
     }
 }
 
@@ -389,43 +367,6 @@ fn extract_table_header_inner(line: &str) -> Option<&str> {
     }
 
     Some(trimmed[1..end].trim())
-}
-
-fn strip_managed_blocks(current: &str, marker_pairs: &[(&str, &str)]) -> String {
-    let mut normalized = current.replace("\r\n", "\n");
-    loop {
-        let mut changed = false;
-        for &(begin_marker, end_marker) in marker_pairs {
-            let next = strip_first_managed_block(&normalized, begin_marker, end_marker);
-            if next != normalized {
-                normalized = next;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    normalized
-}
-
-fn strip_first_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> String {
-    let normalized = current.replace("\r\n", "\n");
-    let Some(begin_index) = normalized.find(begin_marker) else {
-        return normalized;
-    };
-    let Some(end_index) = normalized[begin_index..].find(end_marker) else {
-        return normalized;
-    };
-    let end_absolute = begin_index + end_index + end_marker.len();
-    let prefix = normalized[..begin_index].trim_matches('\n');
-    let suffix = normalized[end_absolute..].trim_matches('\n');
-    match (prefix.is_empty(), suffix.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => format!("{suffix}\n"),
-        (false, true) => format!("{prefix}\n"),
-        (false, false) => format!("{prefix}\n\n{suffix}\n"),
-    }
 }
 
 #[cfg(test)]

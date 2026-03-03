@@ -6,6 +6,7 @@ pub mod dotagents_adapter;
 pub mod dotagents_runtime;
 pub mod engine;
 pub mod error;
+pub mod managed_block;
 pub mod mcp_registry;
 pub mod models;
 pub mod paths;

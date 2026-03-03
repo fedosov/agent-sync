@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getSkillDetails } from "../tauriApi";
 import type { SkillDetails } from "../types";
+import { useEntityDetails } from "./useEntityDetails";
 
 type UseSkillDetailsOptions = {
   selectedSkillKey: string | null;
@@ -17,40 +18,18 @@ export function useSkillDetails({
   selectedSkillKey,
   onError,
 }: UseSkillDetailsOptions): UseSkillDetailsResult {
-  const [details, setDetails] = useState<SkillDetails | null>(null);
+  const details = useEntityDetails(selectedSkillKey, getSkillDetails, onError);
   const [renameDraft, setRenameDraft] = useState("");
-  const requestRef = useRef(0);
 
   useEffect(() => {
-    if (!selectedSkillKey) {
-      requestRef.current += 1;
-      const resetTimer = window.setTimeout(() => {
-        setDetails(null);
-        setRenameDraft("");
-      }, 0);
-      return () => {
-        window.clearTimeout(resetTimer);
-      };
-    }
-
-    const requestId = ++requestRef.current;
-
-    void (async () => {
-      try {
-        const next = await getSkillDetails(selectedSkillKey);
-        if (requestId !== requestRef.current) {
-          return;
-        }
-        setDetails(next);
-        setRenameDraft(next.skill.name);
-      } catch (error) {
-        if (requestId !== requestRef.current) {
-          return;
-        }
-        onError(String(error));
-      }
-    })();
-  }, [onError, selectedSkillKey]);
+    const next = details?.skill.name ?? "";
+    const resetTimer = window.setTimeout(() => {
+      setRenameDraft(next);
+    }, 0);
+    return () => {
+      window.clearTimeout(resetTimer);
+    };
+  }, [details?.skill.name, details?.skill.skill_key]);
 
   return {
     details,

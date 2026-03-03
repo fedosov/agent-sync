@@ -5,6 +5,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { getVisibleMcpAgents } from "./lib/mcpAgents";
+import { compactPath } from "./lib/formatting";
 import { cn } from "./lib/utils";
 import {
   clearAuditEvents,
@@ -100,17 +101,6 @@ function syncStatusVariant(status: SyncHealthStatus | undefined) {
     default:
       return "outline" as const;
   }
-}
-
-function compactPath(path: string | null | undefined): string {
-  if (!path) {
-    return "-";
-  }
-  const segments = path.split("/").filter(Boolean);
-  if (segments.length <= 3) {
-    return path;
-  }
-  return `/${segments[0]}/.../${segments[segments.length - 1]}`;
 }
 
 function escapeRegExp(value: string): string {
@@ -266,6 +256,13 @@ function mcpTarget(server: McpServerRecord): CatalogMutationTarget {
     scope: server.scope,
     workspace: server.workspace,
   };
+}
+
+function mcpDeleteLabel(server: McpServerRecord): string {
+  if (server.scope === "project") {
+    return `MCP server "${server.server_key}" (Project: ${server.workspace ?? "unknown workspace"})`;
+  }
+  return `MCP server "${server.server_key}" (Global)`;
 }
 
 export function App() {
@@ -1994,7 +1991,7 @@ export function App() {
                                   target: mcpTarget(selectedMcpServer),
                                   confirmed: true,
                                 },
-                                label: `MCP server "${selectedMcpServer.server_key}"`,
+                                label: mcpDeleteLabel(selectedMcpServer),
                               });
                             }}
                           >

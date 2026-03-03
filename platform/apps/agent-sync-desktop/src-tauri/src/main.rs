@@ -210,14 +210,18 @@ fn validate_catalog_mutation_target(target: &CatalogMutationTargetPayload) -> Re
             if scope_value != "global" && scope_value != "project" {
                 return Err(format!("unsupported mcp scope: {scope} (global|project)"));
             }
-            if scope_value == "global"
-                && workspace
-                    .as_ref()
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(false)
-            {
+            let workspace_present = workspace
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            if scope_value == "global" && workspace_present {
                 return Err(String::from(
                     "workspace must be omitted for mcp scope=global",
+                ));
+            }
+            if scope_value == "project" && !workspace_present {
+                return Err(String::from(
+                    "workspace must be provided for mcp scope=project",
                 ));
             }
             Ok(())
@@ -1565,6 +1569,13 @@ mod tests {
             workspace: Some(String::from("/tmp/workspace")),
         };
         assert!(validate_catalog_mutation_target(&invalid_global_workspace).is_err());
+
+        let invalid_project_workspace = CatalogMutationTargetPayload::Mcp {
+            server_key: String::from("exa"),
+            scope: String::from("project"),
+            workspace: None,
+        };
+        assert!(validate_catalog_mutation_target(&invalid_project_workspace).is_err());
 
         let valid_project = CatalogMutationTargetPayload::Mcp {
             server_key: String::from("exa"),

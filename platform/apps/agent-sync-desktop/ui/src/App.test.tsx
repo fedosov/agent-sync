@@ -927,7 +927,7 @@ describe("App quiet redesign", () => {
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(
       screen.getByText(
-        'Remove MCP server "exa"? This action moves files to system Trash.',
+        'Remove MCP server "exa" (Project: /tmp/workspace-a)? This action moves files to system Trash.',
       ),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Delete" }));

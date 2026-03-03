@@ -1,18 +1,8 @@
 import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
+import { compactPath } from "../../lib/formatting";
 import { formatUnixTime } from "../../skillUtils";
 import type { SubagentDetails } from "../../types";
-
-function compactPath(path: string | null | undefined): string {
-  if (!path) {
-    return "-";
-  }
-  const segments = path.split("/").filter(Boolean);
-  if (segments.length <= 3) {
-    return path;
-  }
-  return `/${segments[0]}/.../${segments[segments.length - 1]}`;
-}
 
 type SubagentDetailsPanelProps = {
   subagentDetails: SubagentDetails;

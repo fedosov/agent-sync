@@ -1,4 +1,5 @@
 use crate::error::SyncEngineError;
+use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
 use crate::models::{
     CatalogMutationAction, McpEnabledByAgent, McpServerRecord, McpTransport, SkillLifecycleStatus,
 };
@@ -3450,68 +3451,6 @@ fn is_effectively_empty_managed_block(body: &str) -> bool {
     })
 }
 
-fn strip_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> String {
-    let normalized = current.replace("\r\n", "\n");
-    let Some(begin_index) = normalized.find(begin_marker) else {
-        return normalized;
-    };
-    let Some(end_index) = normalized[begin_index..].find(end_marker) else {
-        return normalized;
-    };
-    let end_absolute = begin_index + end_index + end_marker.len();
-    let prefix = normalized[..begin_index].trim_matches('\n');
-    let suffix = normalized[end_absolute..].trim_matches('\n');
-    match (prefix.is_empty(), suffix.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => format!("{suffix}\n"),
-        (false, true) => format!("{prefix}\n"),
-        (false, false) => format!("{prefix}\n\n{suffix}\n"),
-    }
-}
-
-fn strip_managed_blocks(current: &str, marker_pairs: &[(&str, &str)]) -> String {
-    let mut normalized = current.replace("\r\n", "\n");
-    loop {
-        let mut changed = false;
-        for &(begin_marker, end_marker) in marker_pairs {
-            let next = strip_managed_block(&normalized, begin_marker, end_marker);
-            if next != normalized {
-                normalized = next;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    normalized
-}
-
-fn upsert_managed_block(current: &str, begin_marker: &str, end_marker: &str, body: &str) -> String {
-    let block = format!("{begin_marker}\n{body}\n{end_marker}");
-    if current.trim().is_empty() {
-        return format!("{block}\n");
-    }
-
-    let normalized = current.replace("\r\n", "\n");
-    if let Some(begin_index) = normalized.find(begin_marker) {
-        if let Some(end_index) = normalized[begin_index..].find(end_marker) {
-            let end_absolute = begin_index + end_index + end_marker.len();
-            let prefix = normalized[..begin_index].trim_matches('\n');
-            let suffix = normalized[end_absolute..].trim_matches('\n');
-            return match (prefix.is_empty(), suffix.is_empty()) {
-                (true, true) => format!("{block}\n"),
-                (true, false) => format!("{block}\n\n{suffix}\n"),
-                (false, true) => format!("{prefix}\n\n{block}\n"),
-                (false, false) => format!("{prefix}\n\n{block}\n\n{suffix}\n"),
-            };
-        }
-    }
-
-    let trimmed = normalized.trim_matches('\n');
-    format!("{trimmed}\n\n{block}\n")
-}
-
 fn iso8601_now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -3520,10 +3459,11 @@ fn iso8601_now() -> String {
 mod tests {
     use super::{
         extract_managed_block_from_markers, read_json_servers, read_toml_servers_from_str,
-        render_central_block, render_codex_block, strip_managed_blocks, upsert_managed_block,
-        CatalogEntry, CodexCatalogEntry, McpDefinition, McpRegistry, McpScope, ProjectClaudeTarget,
-        CENTRAL_BEGIN, CENTRAL_END, CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
+        render_central_block, render_codex_block, CatalogEntry, CodexCatalogEntry, McpDefinition,
+        McpRegistry, McpScope, ProjectClaudeTarget, CENTRAL_BEGIN, CENTRAL_END,
+        CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
     };
+    use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
     use crate::models::{
         CatalogMutationAction, McpEnabledByAgent, McpTransport, SkillLifecycleStatus,
     };
@@ -3859,6 +3799,117 @@ enabled = true
         assert_eq!(active.status, SkillLifecycleStatus::Active);
         assert_eq!(archived.status, SkillLifecycleStatus::Archived);
         assert!(archived.targets.is_empty());
+    }
+
+    #[test]
+    fn mutate_catalog_entry_allows_project_scope_without_workspace_when_unambiguous() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+        let workspace = String::from("/tmp/workspace-a");
+        let project_catalog_id = format!("project::{workspace}::exa");
+
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            project_catalog_id.clone(),
+            CatalogEntry {
+                catalog_id: project_catalog_id.clone(),
+                server_key: String::from("exa"),
+                scope: McpScope::Project,
+                workspace: Some(workspace),
+                definition: McpDefinition {
+                    transport: McpTransport::Http,
+                    command: None,
+                    args: vec![],
+                    url: Some(String::from("https://mcp.exa.ai/mcp")),
+                    env: BTreeMap::new(),
+                },
+                enabled_by_agent: McpEnabledByAgent {
+                    codex: true,
+                    claude: true,
+                    project: true,
+                },
+                project_claude_target: ProjectClaudeTarget::WorkspaceMcpJson,
+                status: SkillLifecycleStatus::Active,
+                archived_at: None,
+            },
+        );
+        write_central_catalog(&home, &catalog);
+
+        registry
+            .mutate_catalog_entry(&[], CatalogMutationAction::Delete, "exa", "project", None)
+            .expect("project scope mutation without workspace should resolve when unique");
+        let next_catalog = registry
+            .load_central_catalog(&mut Vec::new())
+            .expect("read next catalog");
+        assert!(!next_catalog.contains_key(&project_catalog_id));
+    }
+
+    #[test]
+    fn mutate_catalog_entry_delete_global_keeps_project_entry_with_same_server_key() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+        let workspace = String::from("/tmp/workspace-a");
+        let project_catalog_id = format!("project::{workspace}::exa");
+        let global_catalog_id = String::from("global::exa");
+
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            global_catalog_id.clone(),
+            CatalogEntry {
+                catalog_id: global_catalog_id.clone(),
+                server_key: String::from("exa"),
+                scope: McpScope::Global,
+                workspace: None,
+                definition: McpDefinition {
+                    transport: McpTransport::Http,
+                    command: None,
+                    args: vec![],
+                    url: Some(String::from("https://mcp.exa.ai/mcp")),
+                    env: BTreeMap::new(),
+                },
+                enabled_by_agent: McpEnabledByAgent {
+                    codex: true,
+                    claude: true,
+                    project: false,
+                },
+                project_claude_target: ProjectClaudeTarget::WorkspaceMcpJson,
+                status: SkillLifecycleStatus::Active,
+                archived_at: None,
+            },
+        );
+        catalog.insert(
+            project_catalog_id.clone(),
+            CatalogEntry {
+                catalog_id: project_catalog_id.clone(),
+                server_key: String::from("exa"),
+                scope: McpScope::Project,
+                workspace: Some(workspace.clone()),
+                definition: McpDefinition {
+                    transport: McpTransport::Http,
+                    command: None,
+                    args: vec![],
+                    url: Some(String::from("https://mcp.exa.ai/mcp")),
+                    env: BTreeMap::new(),
+                },
+                enabled_by_agent: McpEnabledByAgent {
+                    codex: true,
+                    claude: true,
+                    project: true,
+                },
+                project_claude_target: ProjectClaudeTarget::WorkspaceMcpJson,
+                status: SkillLifecycleStatus::Active,
+                archived_at: None,
+            },
+        );
+        write_central_catalog(&home, &catalog);
+
+        registry
+            .mutate_catalog_entry(&[], CatalogMutationAction::Delete, "exa", "global", None)
+            .expect("delete global exa");
+
+        let next_catalog = registry
+            .load_central_catalog(&mut Vec::new())
+            .expect("read next catalog");
+        assert!(!next_catalog.contains_key(&global_catalog_id));
+        assert!(next_catalog.contains_key(&project_catalog_id));
     }
 
     #[test]

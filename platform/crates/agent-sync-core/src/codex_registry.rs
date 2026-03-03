@@ -1,3 +1,4 @@
+use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
 use crate::models::{SkillLifecycleStatus, SkillRecord};
 use std::path::Path;
 
@@ -53,7 +54,7 @@ impl CodexSkillsRegistryWriter {
         }
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let unmanaged = strip_managed_blocks(&existing, &SKILLS_MANAGED_MARKER_PAIRS);
-        let updated = self.upsert_managed_block(&unmanaged, &entries);
+        let updated = self.upsert_managed_registry(&unmanaged, &entries);
         std::fs::write(&config_path, updated)
             .map_err(|e| CodexRegistryError::WriteFailed(e.to_string()))
     }
@@ -94,58 +95,32 @@ impl CodexSkillsRegistryWriter {
         ordered
     }
 
-    fn upsert_managed_block(&self, current: &str, entries: &[RegistryEntry]) -> String {
-        let block = self.managed_block(entries);
-        if current.trim().is_empty() {
-            return format!("{block}\n");
-        }
-
-        let normalized = current.replace("\r\n", "\n");
-        if let Some(begin_index) = normalized.find(self.begin_marker) {
-            if let Some(end_index) = normalized[begin_index..].find(self.end_marker) {
-                let end_absolute = begin_index + end_index + self.end_marker.len();
-                let prefix = normalized[..begin_index].trim_matches('\n');
-                let suffix = normalized[end_absolute..].trim_matches('\n');
-
-                return match (prefix.is_empty(), suffix.is_empty()) {
-                    (true, true) => format!("{block}\n"),
-                    (true, false) => format!("{block}\n\n{suffix}\n"),
-                    (false, true) => format!("{prefix}\n\n{block}\n"),
-                    (false, false) => format!("{prefix}\n\n{block}\n\n{suffix}\n"),
-                };
-            }
-        }
-
-        let trimmed = normalized.trim_matches('\n');
-        format!("{trimmed}\n\n{block}\n")
+    fn upsert_managed_registry(&self, current: &str, entries: &[RegistryEntry]) -> String {
+        let body = self.managed_block_body(entries);
+        upsert_managed_block(current, self.begin_marker, self.end_marker, &body)
     }
 
-    fn managed_block(&self, entries: &[RegistryEntry]) -> String {
-        let mut lines = vec![self.begin_marker.to_string()];
+    fn managed_block_body(&self, entries: &[RegistryEntry]) -> String {
         if entries.is_empty() {
-            lines.push("# No managed skill entries".to_string());
-        } else {
-            let config_array: Vec<toml::Value> = entries
-                .iter()
-                .map(|entry| {
-                    let mut item = toml::Table::new();
-                    item.insert("enabled".into(), toml::Value::Boolean(entry.enabled));
-                    item.insert("path".into(), toml::Value::String(entry.path.clone()));
-                    toml::Value::Table(item)
-                })
-                .collect();
-            let mut skills = toml::Table::new();
-            skills.insert("config".into(), toml::Value::Array(config_array));
-            let mut root = toml::Table::new();
-            root.insert("skills".into(), toml::Value::Table(skills));
-            let body = toml::to_string(&root)
-                .expect("BUG: invalid TOML table")
-                .trim_end()
-                .to_string();
-            lines.push(body);
+            return "# No managed skill entries".to_string();
         }
-        lines.push(self.end_marker.to_string());
-        lines.join("\n")
+        let config_array: Vec<toml::Value> = entries
+            .iter()
+            .map(|entry| {
+                let mut item = toml::Table::new();
+                item.insert("enabled".into(), toml::Value::Boolean(entry.enabled));
+                item.insert("path".into(), toml::Value::String(entry.path.clone()));
+                toml::Value::Table(item)
+            })
+            .collect();
+        let mut skills = toml::Table::new();
+        skills.insert("config".into(), toml::Value::Array(config_array));
+        let mut root = toml::Table::new();
+        root.insert("skills".into(), toml::Value::Table(skills));
+        toml::to_string(&root)
+            .expect("BUG: invalid TOML table")
+            .trim_end()
+            .to_string()
     }
 }
 
@@ -156,41 +131,4 @@ fn preferred_agents_target(skill: &SkillRecord) -> Option<String> {
         .iter()
         .find(|path| path.ends_with(&needle))
         .cloned()
-}
-
-fn strip_managed_blocks(current: &str, marker_pairs: &[(&str, &str)]) -> String {
-    let mut normalized = current.replace("\r\n", "\n");
-    loop {
-        let mut changed = false;
-        for &(begin_marker, end_marker) in marker_pairs {
-            let next = strip_first_managed_block(&normalized, begin_marker, end_marker);
-            if next != normalized {
-                normalized = next;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    normalized
-}
-
-fn strip_first_managed_block(current: &str, begin_marker: &str, end_marker: &str) -> String {
-    let normalized = current.replace("\r\n", "\n");
-    let Some(begin_index) = normalized.find(begin_marker) else {
-        return normalized;
-    };
-    let Some(end_index) = normalized[begin_index..].find(end_marker) else {
-        return normalized;
-    };
-    let end_absolute = begin_index + end_index + end_marker.len();
-    let prefix = normalized[..begin_index].trim_matches('\n');
-    let suffix = normalized[end_absolute..].trim_matches('\n');
-    match (prefix.is_empty(), suffix.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => format!("{suffix}\n"),
-        (false, true) => format!("{prefix}\n"),
-        (false, false) => format!("{prefix}\n\n{suffix}\n"),
-    }
 }
