@@ -274,16 +274,93 @@ impl McpRegistry {
         if catalog.is_empty() {
             catalog = self.bootstrap_catalog(&discovered, &mut warnings);
         } else {
+            let mut stale_codex_removals: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+            let mut stale_claude_removals: BTreeMap<
+                (PathBuf, ClaudeJsonTargetLocation),
+                BTreeSet<String>,
+            > = BTreeMap::new();
+
             for item in &discovered {
                 if !catalog.contains_key(&item.entry.catalog_id) {
-                    warnings.push(format!(
-                        "MCP server '{}' ({}) exists in {} but is unmanaged in central catalog",
-                        item.entry.server_key,
-                        item.entry.catalog_id,
-                        item.file_path.display()
-                    ));
-                    if let Some(candidate) = build_broken_unmanaged_claude_candidate(item) {
-                        warnings.push(format_broken_unmanaged_claude_warning(&candidate.output));
+                    let managed_elsewhere = catalog.values().any(|e| {
+                        e.server_key == item.entry.server_key
+                            && e.status == SkillLifecycleStatus::Active
+                    });
+
+                    if managed_elsewhere {
+                        match item.source {
+                            SourceKind::CodexGlobal | SourceKind::ProjectCodex => {
+                                stale_codex_removals
+                                    .entry(item.file_path.clone())
+                                    .or_default()
+                                    .insert(item.entry.server_key.clone());
+                            }
+                            SourceKind::ClaudeUserGlobal => {
+                                stale_claude_removals
+                                    .entry((item.file_path.clone(), ClaudeJsonTargetLocation::Root))
+                                    .or_default()
+                                    .insert(item.entry.server_key.clone());
+                            }
+                            SourceKind::ClaudeUserProject => {
+                                if let Some(workspace) = &item.entry.workspace {
+                                    stale_claude_removals
+                                        .entry((
+                                            item.file_path.clone(),
+                                            ClaudeJsonTargetLocation::Project {
+                                                workspace: workspace.clone(),
+                                            },
+                                        ))
+                                        .or_default()
+                                        .insert(item.entry.server_key.clone());
+                                }
+                            }
+                            _ => {
+                                warnings.push(format!(
+                                    "MCP server '{}' ({}) exists in {} but is unmanaged in central catalog",
+                                    item.entry.server_key,
+                                    item.entry.catalog_id,
+                                    item.file_path.display()
+                                ));
+                            }
+                        }
+                    } else {
+                        warnings.push(format!(
+                            "MCP server '{}' ({}) exists in {} but is unmanaged in central catalog",
+                            item.entry.server_key,
+                            item.entry.catalog_id,
+                            item.file_path.display()
+                        ));
+                        if let Some(candidate) = build_broken_unmanaged_claude_candidate(item) {
+                            warnings
+                                .push(format_broken_unmanaged_claude_warning(&candidate.output));
+                        }
+                    }
+                }
+            }
+
+            for (path, keys) in &stale_codex_removals {
+                for key in keys {
+                    if let Err(error) = self.remove_unmanaged_codex_server_entry(path, key) {
+                        warnings.push(format!(
+                            "Failed to auto-clean stale Codex MCP '{}' from {}: {}",
+                            key,
+                            path.display(),
+                            error
+                        ));
+                    }
+                }
+            }
+
+            for ((path, location), keys) in &stale_claude_removals {
+                match self.remove_claude_json_server_keys(path, location, keys, &mut warnings) {
+                    Ok(count) if count > 0 => {}
+                    Ok(_) => {}
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Failed to auto-clean stale Claude MCP entries from {}: {}",
+                            path.display(),
+                            error
+                        ));
                     }
                 }
             }
@@ -2146,6 +2223,115 @@ impl McpRegistry {
         fs::write(&path, data).map_err(|error| SyncEngineError::io(path, error))
     }
 
+    fn remove_claude_json_server_keys(
+        &self,
+        path: &Path,
+        location: &ClaudeJsonTargetLocation,
+        keys: &BTreeSet<String>,
+        warnings: &mut Vec<String>,
+    ) -> Result<usize, SyncEngineError> {
+        let raw = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because file is missing",
+                        path.display()
+                    ));
+                    return Ok(0);
+                }
+                return Err(SyncEngineError::io(path, error));
+            }
+        };
+        if raw.trim().is_empty() {
+            return Ok(0);
+        }
+
+        let mut root = match serde_json::from_str::<JsonValue>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                warnings.push(format!(
+                    "Skipped unmanaged Claude MCP repair for {} because JSON parse failed: {error}",
+                    path.display()
+                ));
+                return Ok(0);
+            }
+        };
+
+        let Some(root_obj) = root.as_object_mut() else {
+            warnings.push(format!(
+                "Skipped unmanaged Claude MCP repair for {} because root is not an object",
+                path.display()
+            ));
+            return Ok(0);
+        };
+
+        let removed_from_target = match location {
+            ClaudeJsonTargetLocation::Root => {
+                let Some(mcp_servers) = root_obj.get_mut("mcpServers") else {
+                    return Ok(0);
+                };
+                let Some(server_map) = mcp_servers.as_object_mut() else {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because mcpServers is not an object",
+                        path.display()
+                    ));
+                    return Ok(0);
+                };
+                remove_server_keys(server_map, keys)
+            }
+            ClaudeJsonTargetLocation::Project { workspace } => {
+                let Some(projects) = root_obj.get_mut("projects") else {
+                    return Ok(0);
+                };
+                let Some(projects_map) = projects.as_object_mut() else {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because projects is not an object",
+                        path.display()
+                    ));
+                    return Ok(0);
+                };
+                let Some(project) = projects_map.get_mut(workspace) else {
+                    return Ok(0);
+                };
+                let Some(project_obj) = project.as_object_mut() else {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because projects.{} is not an object",
+                        path.display(),
+                        workspace
+                    ));
+                    return Ok(0);
+                };
+                let Some(mcp_servers) = project_obj.get_mut("mcpServers") else {
+                    return Ok(0);
+                };
+                let Some(server_map) = mcp_servers.as_object_mut() else {
+                    warnings.push(format!(
+                        "Skipped unmanaged Claude MCP repair for {} because projects.{}.mcpServers is not an object",
+                        path.display(),
+                        workspace
+                    ));
+                    return Ok(0);
+                };
+                remove_server_keys(server_map, keys)
+            }
+        };
+
+        if removed_from_target == 0 {
+            return Ok(0);
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| SyncEngineError::io(parent, error))?;
+        }
+
+        let mut rendered = serde_json::to_vec_pretty(&root)?;
+        rendered.push(b'\n');
+        fs::write(path, rendered).map_err(|error| SyncEngineError::io(path, error))?;
+
+        Ok(removed_from_target)
+    }
+
     fn remove_broken_unmanaged_claude_entries(
         &self,
         candidates: &[BrokenUnmanagedClaudeCandidate],
@@ -2163,108 +2349,12 @@ impl McpRegistry {
         let mut changed_files = BTreeSet::new();
         let mut removed_count = 0usize;
 
-        for ((path, location), keys) in grouped {
-            let raw = match fs::read_to_string(&path) {
-                Ok(value) => value,
-                Err(error) => {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        warnings.push(format!(
-                            "Skipped unmanaged Claude MCP repair for {} because file is missing",
-                            path.display()
-                        ));
-                        continue;
-                    }
-                    return Err(SyncEngineError::io(&path, error));
-                }
-            };
-            if raw.trim().is_empty() {
-                continue;
+        for ((path, location), keys) in &grouped {
+            let removed = self.remove_claude_json_server_keys(path, location, keys, warnings)?;
+            if removed > 0 {
+                removed_count += removed;
+                changed_files.insert(path.display().to_string());
             }
-
-            let mut root = match serde_json::from_str::<JsonValue>(&raw) {
-                Ok(value) => value,
-                Err(error) => {
-                    warnings.push(format!(
-                        "Skipped unmanaged Claude MCP repair for {} because JSON parse failed: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-
-            let Some(root_obj) = root.as_object_mut() else {
-                warnings.push(format!(
-                    "Skipped unmanaged Claude MCP repair for {} because root is not an object",
-                    path.display()
-                ));
-                continue;
-            };
-
-            let removed_from_target = match location {
-                ClaudeJsonTargetLocation::Root => {
-                    let Some(mcp_servers) = root_obj.get_mut("mcpServers") else {
-                        continue;
-                    };
-                    let Some(server_map) = mcp_servers.as_object_mut() else {
-                        warnings.push(format!(
-                            "Skipped unmanaged Claude MCP repair for {} because mcpServers is not an object",
-                            path.display()
-                        ));
-                        continue;
-                    };
-                    remove_server_keys(server_map, &keys)
-                }
-                ClaudeJsonTargetLocation::Project { workspace } => {
-                    let Some(projects) = root_obj.get_mut("projects") else {
-                        continue;
-                    };
-                    let Some(projects_map) = projects.as_object_mut() else {
-                        warnings.push(format!(
-                            "Skipped unmanaged Claude MCP repair for {} because projects is not an object",
-                            path.display()
-                        ));
-                        continue;
-                    };
-                    let Some(project) = projects_map.get_mut(&workspace) else {
-                        continue;
-                    };
-                    let Some(project_obj) = project.as_object_mut() else {
-                        warnings.push(format!(
-                            "Skipped unmanaged Claude MCP repair for {} because projects.{} is not an object",
-                            path.display(),
-                            workspace
-                        ));
-                        continue;
-                    };
-                    let Some(mcp_servers) = project_obj.get_mut("mcpServers") else {
-                        continue;
-                    };
-                    let Some(server_map) = mcp_servers.as_object_mut() else {
-                        warnings.push(format!(
-                            "Skipped unmanaged Claude MCP repair for {} because projects.{}.mcpServers is not an object",
-                            path.display(),
-                            workspace
-                        ));
-                        continue;
-                    };
-                    remove_server_keys(server_map, &keys)
-                }
-            };
-
-            if removed_from_target == 0 {
-                continue;
-            }
-
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| SyncEngineError::io(parent, error))?;
-            }
-
-            let mut rendered = serde_json::to_vec_pretty(&root)?;
-            rendered.push(b'\n');
-            fs::write(&path, rendered).map_err(|error| SyncEngineError::io(&path, error))?;
-
-            removed_count += removed_from_target;
-            changed_files.insert(path.display().to_string());
         }
 
         Ok(RemovalOutcome {
@@ -4015,5 +4105,239 @@ enabled = true
         assert!(!promoted.enabled_by_agent.project);
         assert!(promoted.enabled_by_agent.codex);
         assert!(!promoted.enabled_by_agent.claude);
+    }
+
+    fn make_catalog_entry(
+        catalog_id: &str,
+        server_key: &str,
+        scope: McpScope,
+        workspace: Option<&str>,
+        status: SkillLifecycleStatus,
+    ) -> CatalogEntry {
+        CatalogEntry {
+            catalog_id: String::from(catalog_id),
+            server_key: String::from(server_key),
+            scope,
+            workspace: workspace.map(String::from),
+            definition: McpDefinition {
+                transport: McpTransport::Stdio,
+                command: Some(String::from("npx")),
+                args: vec![String::from("-y"), String::from(server_key)],
+                url: None,
+                env: BTreeMap::new(),
+            },
+            enabled_by_agent: McpEnabledByAgent {
+                codex: true,
+                claude: true,
+                project: scope == McpScope::Project,
+            },
+            project_claude_target: ProjectClaudeTarget::WorkspaceMcpJson,
+            status,
+            archived_at: None,
+        }
+    }
+
+    #[test]
+    fn sync_auto_cleans_stale_unmanaged_codex_entry() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+
+        // Catalog has ahrefs under a project scope
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            String::from("project::/workspace::ahrefs"),
+            make_catalog_entry(
+                "project::/workspace::ahrefs",
+                "ahrefs",
+                McpScope::Project,
+                Some("/workspace"),
+                SkillLifecycleStatus::Active,
+            ),
+        );
+        write_central_catalog(&home, &catalog);
+
+        // Write unmanaged ahrefs entry into global codex config
+        let codex_path = home.join(".codex").join("config.toml");
+        std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &codex_path,
+            "[mcp_servers.ahrefs]\ncommand = \"npx\"\nargs = [\"-y\", \"ahrefs\"]\n",
+        )
+        .unwrap();
+
+        let outcome = registry.sync(&[]).expect("sync");
+
+        // The unmanaged codex entry should be auto-cleaned
+        let codex_raw = std::fs::read_to_string(&codex_path).unwrap_or_default();
+        // The unmanaged block should no longer contain ahrefs
+        let unmanaged = strip_managed_blocks(&codex_raw, &CODEX_MARKER_PAIRS);
+        assert!(
+            !unmanaged.contains("ahrefs"),
+            "stale ahrefs should be removed from unmanaged codex block"
+        );
+
+        // No "unmanaged in central catalog" warning
+        let unmanaged_warnings: Vec<_> = outcome
+            .warnings
+            .iter()
+            .filter(|w| w.contains("unmanaged in central catalog") && w.contains("ahrefs"))
+            .collect();
+        assert!(
+            unmanaged_warnings.is_empty(),
+            "should not warn about stale entry managed elsewhere: {unmanaged_warnings:?}"
+        );
+    }
+
+    #[test]
+    fn sync_auto_cleans_stale_unmanaged_claude_global_entry() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+
+        // Catalog has ahrefs under a project scope
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            String::from("project::/workspace::ahrefs"),
+            make_catalog_entry(
+                "project::/workspace::ahrefs",
+                "ahrefs",
+                McpScope::Project,
+                Some("/workspace"),
+                SkillLifecycleStatus::Active,
+            ),
+        );
+        write_central_catalog(&home, &catalog);
+
+        // Write unmanaged ahrefs in ~/.claude.json root mcpServers
+        let claude_json_path = home.join(".claude.json");
+        std::fs::write(
+            &claude_json_path,
+            r#"{"mcpServers":{"ahrefs":{"command":"npx","args":["-y","ahrefs"]}}}"#,
+        )
+        .unwrap();
+
+        let outcome = registry.sync(&[]).expect("sync");
+
+        // The ahrefs entry should be removed from claude.json
+        let claude_raw = std::fs::read_to_string(&claude_json_path).unwrap();
+        assert!(
+            !claude_raw.contains("\"ahrefs\""),
+            "stale ahrefs should be removed from claude.json root mcpServers"
+        );
+
+        let unmanaged_warnings: Vec<_> = outcome
+            .warnings
+            .iter()
+            .filter(|w| w.contains("unmanaged in central catalog") && w.contains("ahrefs"))
+            .collect();
+        assert!(
+            unmanaged_warnings.is_empty(),
+            "should not warn about stale entry managed elsewhere: {unmanaged_warnings:?}"
+        );
+    }
+
+    #[test]
+    fn sync_auto_cleans_stale_unmanaged_claude_project_entry() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+
+        let workspace = "/tmp/my-project";
+        // Catalog has clarity under global scope
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            String::from("global::clarity"),
+            make_catalog_entry(
+                "global::clarity",
+                "clarity",
+                McpScope::Global,
+                None,
+                SkillLifecycleStatus::Active,
+            ),
+        );
+        write_central_catalog(&home, &catalog);
+
+        // Write unmanaged clarity in ~/.claude.json project section
+        let claude_json_path = home.join(".claude.json");
+        let claude_json = serde_json::json!({
+            "projects": {
+                workspace: {
+                    "mcpServers": {
+                        "clarity": {
+                            "command": "npx",
+                            "args": ["-y", "clarity"]
+                        }
+                    }
+                }
+            }
+        });
+        std::fs::write(
+            &claude_json_path,
+            serde_json::to_string_pretty(&claude_json).unwrap(),
+        )
+        .unwrap();
+
+        let outcome = registry.sync(&[PathBuf::from(workspace)]).expect("sync");
+
+        // clarity should be removed from the project section
+        let claude_raw = std::fs::read_to_string(&claude_json_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&claude_raw).unwrap();
+        let project_servers = parsed
+            .get("projects")
+            .and_then(|p| p.get(workspace))
+            .and_then(|p| p.get("mcpServers"))
+            .and_then(|s| s.as_object());
+        if let Some(servers) = project_servers {
+            assert!(
+                !servers.contains_key("clarity"),
+                "stale clarity should be removed from project mcpServers"
+            );
+        }
+
+        let unmanaged_warnings: Vec<_> = outcome
+            .warnings
+            .iter()
+            .filter(|w| w.contains("unmanaged in central catalog") && w.contains("clarity"))
+            .collect();
+        assert!(
+            unmanaged_warnings.is_empty(),
+            "should not warn about stale entry managed elsewhere: {unmanaged_warnings:?}"
+        );
+    }
+
+    #[test]
+    fn sync_keeps_warning_for_truly_unmanaged_entry() {
+        let (_temp, registry, home, _runtime) = registry_in_temp();
+
+        // Catalog has only "global::existing"
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            String::from("global::existing"),
+            make_catalog_entry(
+                "global::existing",
+                "existing",
+                McpScope::Global,
+                None,
+                SkillLifecycleStatus::Active,
+            ),
+        );
+        write_central_catalog(&home, &catalog);
+
+        // Write unmanaged "unknown-server" in codex (server_key not in catalog at all)
+        let codex_path = home.join(".codex").join("config.toml");
+        std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &codex_path,
+            "[mcp_servers.unknown-server]\ncommand = \"npx\"\nargs = [\"-y\", \"unknown\"]\n",
+        )
+        .unwrap();
+
+        let outcome = registry.sync(&[]).expect("sync");
+
+        // Should still produce the "unmanaged" warning
+        let unmanaged_warnings: Vec<_> = outcome
+            .warnings
+            .iter()
+            .filter(|w| w.contains("unmanaged in central catalog") && w.contains("unknown-server"))
+            .collect();
+        assert!(
+            !unmanaged_warnings.is_empty(),
+            "should warn about truly unmanaged entry"
+        );
     }
 }
