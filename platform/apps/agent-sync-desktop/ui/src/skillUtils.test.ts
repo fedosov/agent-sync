@@ -4,8 +4,8 @@ import {
   normalizeSkillKey,
   pickSelectedSkillKey,
   sortAndFilterSkills,
-  type SkillRecord,
 } from "./skillUtils";
+import type { SkillRecord } from "./types";
 
 const skills: SkillRecord[] = [
   {

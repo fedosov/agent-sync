@@ -208,26 +208,12 @@ export async function setMcpServerEnabled(
   scope?: "global" | "project",
   workspace?: string | null,
 ): Promise<SyncState> {
-  const payload: {
-    serverKey: string;
-    agent: "codex" | "claude";
-    enabled: boolean;
-    scope?: "global" | "project";
-    workspace?: string;
-  } = {
+  return invoke<SyncState>("set_mcp_server_enabled", {
     serverKey,
     agent,
     enabled,
-  };
-  if (scope) {
-    payload.scope = scope;
-  }
-  if (workspace) {
-    payload.workspace = workspace;
-  }
-
-  return invoke<SyncState>("set_mcp_server_enabled", {
-    ...payload,
+    ...(scope ? { scope } : {}),
+    ...(workspace ? { workspace } : {}),
   });
 }
 

@@ -2,15 +2,13 @@ import type { McpEnabledByAgent, McpServerRecord } from "../types";
 
 export type McpAgentId = "codex" | "claude";
 
-const MCP_AGENTS_BY_SCOPE: Record<McpServerRecord["scope"], McpAgentId[]> = {
-  global: ["codex", "claude"],
-  project: ["codex", "claude"],
-};
+const VISIBLE_MCP_AGENTS: McpAgentId[] = ["codex", "claude"];
 
 export function getVisibleMcpAgents(
   scope: McpServerRecord["scope"],
 ): McpAgentId[] {
-  return MCP_AGENTS_BY_SCOPE[scope];
+  void scope;
+  return VISIBLE_MCP_AGENTS;
 }
 
 export function splitMcpAgentsByEnabled(

@@ -274,22 +274,6 @@ impl SyncEngine {
         self.audit_store.clear_events()
     }
 
-    pub fn record_audit_blocked(
-        &self,
-        action: &str,
-        summary: &str,
-        details: Option<String>,
-    ) -> Result<(), SyncEngineError> {
-        self.record_audit_event(
-            action,
-            AuditEventStatus::Blocked,
-            None,
-            summary.to_string(),
-            Vec::new(),
-            details,
-        )
-    }
-
     pub fn starred_skill_ids(&self) -> Vec<String> {
         let state = self.store.load_state();
         let settings = self.preferences_store.load_settings();
@@ -3685,8 +3669,8 @@ mod tests {
                 error: None,
                 warnings: Vec::new(),
             },
-            summary: SyncSummary::empty(),
-            subagent_summary: SyncSummary::empty(),
+            summary: SyncSummary::default(),
+            subagent_summary: SyncSummary::default(),
             skills: Vec::new(),
             subagents: Vec::new(),
             mcp_servers: Vec::new(),

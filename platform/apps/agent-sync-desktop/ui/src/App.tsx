@@ -13,7 +13,8 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { useSkillDetails } from "./hooks/useSkillDetails";
-import { useSubagentDetails } from "./hooks/useSubagentDetails";
+import { getSubagentDetails } from "./tauriApi";
+import { useEntityDetails } from "./hooks/useEntityDetails";
 import { useSyncState, mcpSelectionKey } from "./hooks/useSyncState";
 import {
   toTitleCase,
@@ -65,6 +66,8 @@ type ActionsMenuTarget = "skill" | "subagent" | "mcp" | null;
 type DotagentsProofStatus = "idle" | "running" | "ok" | "error";
 const DOTAGENTS_MIGRATION_REQUIRED =
   "migration required before strict dotagents sync";
+const FILESYSTEM_DISABLED_MESSAGE =
+  "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.";
 
 function renderSyncWarningText(warning: string) {
   const term = "central catalog";
@@ -115,10 +118,11 @@ export function App() {
     onError: setError,
   });
 
-  const { subagentDetails } = useSubagentDetails({
+  const subagentDetails = useEntityDetails(
     selectedSubagentId,
-    onError: setError,
-  });
+    getSubagentDetails,
+    setError,
+  );
 
   const [auditOpen, setAuditOpen] = useState(false);
   const [focusKind, setFocusKind] = useState<FocusKind>(() =>
@@ -425,9 +429,7 @@ export function App() {
 
   async function handleSync() {
     if (!runtimeControls?.allow_filesystem_changes) {
-      setError(
-        "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.",
-      );
+      setError(FILESYSTEM_DISABLED_MESSAGE);
       return;
     }
     await refreshState({
@@ -438,9 +440,7 @@ export function App() {
 
   async function handleFixSyncWarning(warning: string) {
     if (!runtimeControls?.allow_filesystem_changes) {
-      setError(
-        "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.",
-      );
+      setError(FILESYSTEM_DISABLED_MESSAGE);
       return;
     }
     if (busy || fixingSyncWarning) {
@@ -508,9 +508,7 @@ export function App() {
 
   async function handleVerifyDotagents() {
     if (!runtimeControls?.allow_filesystem_changes) {
-      setError(
-        "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.",
-      );
+      setError(FILESYSTEM_DISABLED_MESSAGE);
       return;
     }
 
@@ -519,9 +517,7 @@ export function App() {
 
   async function handleInitializeDotagents() {
     if (!runtimeControls?.allow_filesystem_changes) {
-      setError(
-        "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.",
-      );
+      setError(FILESYSTEM_DISABLED_MESSAGE);
       return;
     }
 

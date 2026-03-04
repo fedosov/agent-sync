@@ -42,7 +42,7 @@ export function syncStatusVariant(status: SyncHealthStatus | undefined) {
   }
 }
 
-export function escapeRegExp(value: string): string {
+function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 

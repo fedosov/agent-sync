@@ -1,7 +1,5 @@
 import type { SkillRecord } from "./types";
 
-export type { SkillRecord };
-
 export function normalizeSkillKey(title: string): string {
   const trimmed = title.trim().toLowerCase();
   if (!trimmed) return "";

@@ -147,15 +147,13 @@ pub(crate) struct CatalogMutationRequestPayload {
     pub(crate) confirmed: bool,
 }
 
-pub(crate) fn blocked_write_message(action: &str) -> String {
-    format!("Filesystem changes are disabled. Enable 'Allow filesystem changes' to run {action}.")
-}
-
 pub(crate) fn ensure_write_allowed(engine: &SyncEngine, action: &str) -> Result<(), String> {
     if engine.allow_filesystem_changes() {
         return Ok(());
     }
-    Err(blocked_write_message(action))
+    Err(format!(
+        "Filesystem changes are disabled. Enable 'Allow filesystem changes' to run {action}."
+    ))
 }
 
 pub(crate) fn last_modified_seconds(path: &Path) -> Option<u64> {
@@ -202,14 +200,14 @@ pub(crate) fn normalize_optional_string(value: Option<String>) -> Option<String>
         .filter(|item| !item.is_empty())
 }
 
-pub(crate) fn to_catalog_mutation_action(
-    value: CatalogMutationActionPayload,
-) -> CatalogMutationAction {
-    match value {
-        CatalogMutationActionPayload::Archive => CatalogMutationAction::Archive,
-        CatalogMutationActionPayload::Restore => CatalogMutationAction::Restore,
-        CatalogMutationActionPayload::Delete => CatalogMutationAction::Delete,
-        CatalogMutationActionPayload::MakeGlobal => CatalogMutationAction::MakeGlobal,
+impl From<CatalogMutationActionPayload> for CatalogMutationAction {
+    fn from(value: CatalogMutationActionPayload) -> Self {
+        match value {
+            CatalogMutationActionPayload::Archive => Self::Archive,
+            CatalogMutationActionPayload::Restore => Self::Restore,
+            CatalogMutationActionPayload::Delete => Self::Delete,
+            CatalogMutationActionPayload::MakeGlobal => Self::MakeGlobal,
+        }
     }
 }
 
@@ -456,7 +454,7 @@ pub(crate) fn mutate_catalog_item_inner(
     validate_catalog_mutation_target(&request.target)?;
     ensure_write_allowed(engine, action_name)?;
     let _guard = runtime.acquire_sync_lock()?;
-    let action = to_catalog_mutation_action(request.action);
+    let action = CatalogMutationAction::from(request.action);
     let target = to_catalog_mutation_target(request.target)?;
     engine
         .mutate_catalog_item(action, target, request.confirmed)
@@ -848,9 +846,9 @@ mod tests {
         build_platform_context, build_subagent_target_status, enable_auto_watch_and_initial_sync,
         ensure_write_allowed, normalize_os_name, read_skill_dir_tree,
         set_allow_filesystem_changes_inner, set_allow_filesystem_changes_inner_with,
-        stop_auto_watch, to_catalog_mutation_action, validate_catalog_mutation_target,
-        CatalogMutationActionPayload, CatalogMutationRequestPayload, CatalogMutationTargetPayload,
-        RuntimeState, SubagentTargetKind,
+        stop_auto_watch, validate_catalog_mutation_target, CatalogMutationActionPayload,
+        CatalogMutationRequestPayload, CatalogMutationTargetPayload, RuntimeState,
+        SubagentTargetKind,
     };
     use agent_sync_core::{
         AuditEventStatus, CatalogMutationAction, SyncEngine, SyncEngineEnvironment, SyncPaths,
@@ -1112,7 +1110,7 @@ mod tests {
             CatalogMutationActionPayload::MakeGlobal
         ));
         assert_eq!(
-            to_catalog_mutation_action(payload.action),
+            CatalogMutationAction::from(payload.action),
             CatalogMutationAction::MakeGlobal
         );
     }

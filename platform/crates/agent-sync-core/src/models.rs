@@ -52,14 +52,14 @@ pub struct AuditEvent {
     pub details: Option<String>,
 }
 
-impl SyncState {
-    pub fn empty() -> Self {
+impl Default for SyncState {
+    fn default() -> Self {
         Self {
             version: 2,
             generated_at: String::new(),
-            sync: SyncMetadata::empty(),
-            summary: SyncSummary::empty(),
-            subagent_summary: SyncSummary::empty(),
+            sync: SyncMetadata::default(),
+            summary: SyncSummary::default(),
+            subagent_summary: SyncSummary::default(),
             skills: Vec::new(),
             subagents: Vec::new(),
             mcp_servers: Vec::new(),
@@ -83,8 +83,8 @@ pub struct SyncMetadata {
     pub warnings: Vec<String>,
 }
 
-impl SyncMetadata {
-    pub fn empty() -> Self {
+impl Default for SyncMetadata {
+    fn default() -> Self {
         Self {
             status: SyncHealthStatus::Unknown,
             last_started_at: None,
@@ -108,18 +108,6 @@ pub struct SyncSummary {
     pub mcp_count: usize,
     #[serde(default, rename = "mcp_warning_count")]
     pub mcp_warning_count: usize,
-}
-
-impl SyncSummary {
-    pub fn empty() -> Self {
-        Self {
-            global_count: 0,
-            project_count: 0,
-            conflict_count: 0,
-            mcp_count: 0,
-            mcp_warning_count: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 use directories::ProjectDirs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct SyncPaths {
@@ -61,8 +61,4 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()))
-}
-
-pub fn standardized(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
