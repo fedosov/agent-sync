@@ -43,10 +43,10 @@ impl SyncEngineEnvironment {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".config").join("ai-agents").join("agent-sync"));
         Self {
-            home_directory: home.clone(),
             dev_root: home.join("Dev"),
             worktrees_root: home.join(".codex").join("worktrees"),
             runtime_directory,
+            home_directory: home,
         }
     }
 }

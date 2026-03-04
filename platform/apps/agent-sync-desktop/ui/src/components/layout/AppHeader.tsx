@@ -2,27 +2,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { cn } from "../../lib/utils";
+import { syncStatusVariant, toTitleCase } from "../../lib/catalogUtils";
 import type { RefreshIntervalMinutes, SyncHealthStatus } from "../../types";
-
-function toTitleCase(value: string): string {
-  if (!value) {
-    return value;
-  }
-  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
-}
-
-function syncStatusVariant(status: SyncHealthStatus | undefined) {
-  switch (status) {
-    case "ok":
-      return "success" as const;
-    case "failed":
-      return "error" as const;
-    case "syncing":
-      return "warning" as const;
-    default:
-      return "outline" as const;
-  }
-}
 
 type AppHeaderProps = {
   syncStatus: SyncHealthStatus | undefined;

@@ -2,6 +2,7 @@ import { Button } from "../ui/button";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { compactPath } from "../../lib/formatting";
 import { formatUnixTime } from "../../skillUtils";
+import { subagentStatus } from "../../lib/catalogUtils";
 import type { SubagentDetails } from "../../types";
 
 type SubagentDetailsPanelProps = {
@@ -16,10 +17,6 @@ type SubagentDetailsPanelProps = {
   onRestore: () => void;
   onRequestDelete: () => void;
 };
-
-function subagentStatus(subagent: { status?: string }): string {
-  return subagent.status ?? "active";
-}
 
 export function SubagentDetailsPanel({
   subagentDetails,
