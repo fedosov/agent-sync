@@ -3443,6 +3443,8 @@ fn is_secret_like_key(key: &str) -> bool {
         || normalized.contains("password")
         || normalized.contains("api_key")
         || normalized.contains("apikey")
+        || normalized.contains("license")
+        || normalized.contains("email")
 }
 
 fn redact_secret_like_arg(arg: &str) -> Option<String> {
@@ -3548,10 +3550,10 @@ fn iso8601_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_managed_block_from_markers, read_json_servers, read_toml_servers_from_str,
-        render_central_block, render_codex_block, CatalogEntry, CodexCatalogEntry, McpDefinition,
-        McpRegistry, McpScope, ProjectClaudeTarget, CENTRAL_BEGIN, CENTRAL_END,
-        CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
+        extract_managed_block_from_markers, is_secret_like_key, read_json_servers,
+        read_toml_servers_from_str, render_central_block, render_codex_block, CatalogEntry,
+        CodexCatalogEntry, McpDefinition, McpRegistry, McpScope, ProjectClaudeTarget,
+        CENTRAL_BEGIN, CENTRAL_END, CENTRAL_MARKER_PAIRS, CODEX_MARKER_PAIRS,
     };
     use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
     use crate::models::{
@@ -4339,5 +4341,32 @@ enabled = true
             !unmanaged_warnings.is_empty(),
             "should warn about truly unmanaged entry"
         );
+    }
+
+    #[test]
+    fn is_secret_like_key_matches_known_patterns() {
+        // Original patterns
+        assert!(is_secret_like_key("AUTH_TOKEN"));
+        assert!(is_secret_like_key("client_secret"));
+        assert!(is_secret_like_key("DB_PASSWORD"));
+        assert!(is_secret_like_key("MY_API_KEY"));
+        assert!(is_secret_like_key("SOME_APIKEY"));
+
+        // Newly added patterns
+        assert!(is_secret_like_key("LICENSE"));
+        assert!(is_secret_like_key("DAISYUI_LICENSE"));
+        assert!(is_secret_like_key("license_key"));
+        assert!(is_secret_like_key("EMAIL"));
+        assert!(is_secret_like_key("DAISYUI_EMAIL"));
+        assert!(is_secret_like_key("user_email"));
+    }
+
+    #[test]
+    fn is_secret_like_key_rejects_non_secret_keys() {
+        assert!(!is_secret_like_key("PATH"));
+        assert!(!is_secret_like_key("HOME"));
+        assert!(!is_secret_like_key("NODE_ENV"));
+        assert!(!is_secret_like_key("DEBUG"));
+        assert!(!is_secret_like_key("PORT"));
     }
 }
