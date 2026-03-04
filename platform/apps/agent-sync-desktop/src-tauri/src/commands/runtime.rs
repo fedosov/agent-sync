@@ -33,10 +33,7 @@ pub fn list_audit_events(
 #[tauri::command]
 pub fn clear_audit_events(runtime: tauri::State<RuntimeState>) -> Result<(), String> {
     let engine = SyncEngine::current();
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .clear_audit_events()
         .map_err(|error| error.to_string())

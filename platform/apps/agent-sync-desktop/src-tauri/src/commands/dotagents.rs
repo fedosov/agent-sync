@@ -10,10 +10,7 @@ pub fn run_dotagents_sync(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "run_dotagents_sync")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .run_dotagents_sync(parsed_scope)
         .map_err(|error| error.to_string())?;
@@ -47,10 +44,7 @@ pub fn dotagents_skills_install(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_skills_install")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .run_dotagents_install_frozen(parsed_scope)
         .map_err(|error| error.to_string())
@@ -65,10 +59,7 @@ pub fn dotagents_skills_add(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_skills_add")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .run_dotagents_command(parsed_scope, &["add", package.as_str()])
         .map_err(|error| error.to_string())
@@ -83,10 +74,7 @@ pub fn dotagents_skills_remove(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_skills_remove")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .run_dotagents_command(parsed_scope, &["remove", package.as_str()])
         .map_err(|error| error.to_string())
@@ -101,10 +89,7 @@ pub fn dotagents_skills_update(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_skills_update")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
 
     let mut command = vec![String::from("update")];
     if let Some(pkg) = package {
@@ -125,10 +110,7 @@ pub fn dotagents_mcp_add(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_mcp_add")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     let mut command = vec![String::from("mcp"), String::from("add")];
     command.extend(args);
     let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
@@ -146,10 +128,7 @@ pub fn dotagents_mcp_remove(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "dotagents_mcp_remove")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     let mut command = vec![String::from("mcp"), String::from("remove")];
     command.extend(args);
     let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
@@ -166,10 +145,7 @@ pub fn migrate_dotagents(
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "migrate_dotagents")?;
     let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .migrate_to_dotagents(parsed_scope)
         .map_err(|error| error.to_string())

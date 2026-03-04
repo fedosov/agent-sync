@@ -4,8 +4,8 @@ mod commands;
 
 use agent_sync_core::{
     watch::SyncWatchStream, AuditEventStatus, CatalogMutationAction, CatalogMutationTarget,
-    DotagentsScope, SkillLifecycleStatus, SkillLocator, SkillRecord, SubagentRecord, SyncEngine,
-    SyncState, SyncTrigger,
+    DotagentsScope, ScopeFilter, SkillLifecycleStatus, SkillLocator, SkillRecord, SubagentRecord,
+    SyncEngine, SyncState, SyncTrigger,
 };
 use commands::*;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::Manager;
 
 pub(crate) const MAX_MAIN_FILE_PREVIEW_CHARS: usize = 50_000;
@@ -39,6 +39,14 @@ struct WatchRuntime {
 pub(crate) struct RuntimeState {
     pub(crate) watch: Arc<Mutex<WatchRuntime>>,
     pub(crate) sync_lock: Arc<Mutex<()>>,
+}
+
+impl RuntimeState {
+    pub(crate) fn acquire_sync_lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.sync_lock
+            .lock()
+            .map_err(|_| String::from("internal lock error"))
+    }
 }
 
 impl Default for RuntimeState {
@@ -150,6 +158,14 @@ pub(crate) fn ensure_write_allowed(engine: &SyncEngine, action: &str) -> Result<
     Err(blocked_write_message(action))
 }
 
+pub(crate) fn last_modified_seconds(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+}
+
 pub(crate) fn parse_audit_status(value: Option<&str>) -> Result<Option<AuditEventStatus>, String> {
     let Some(raw) = value else {
         return Ok(None);
@@ -162,6 +178,15 @@ pub(crate) fn parse_audit_status(value: Option<&str>) -> Result<Option<AuditEven
             "unsupported audit status: {other} (success|failed|blocked)"
         )),
     }
+}
+
+pub(crate) fn parse_scope_filter(scope: Option<&str>) -> Result<ScopeFilter, String> {
+    let Some(value) = scope else {
+        return Ok(ScopeFilter::All);
+    };
+    value
+        .parse::<ScopeFilter>()
+        .map_err(|_| format!("unsupported scope: {value}"))
 }
 
 pub(crate) fn parse_dotagents_scope(value: Option<&str>) -> Result<DotagentsScope, String> {
@@ -277,10 +302,7 @@ pub(crate) fn run_sync_with_lock(
     runtime: &RuntimeState,
     trigger: SyncTrigger,
 ) -> Result<SyncState, String> {
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine.run_sync(trigger).map_err(|error| error.to_string())
 }
 
@@ -433,10 +455,7 @@ pub(crate) fn mutate_catalog_item_inner(
 ) -> Result<SyncState, String> {
     validate_catalog_mutation_target(&request.target)?;
     ensure_write_allowed(engine, action_name)?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     let action = to_catalog_mutation_action(request.action);
     let target = to_catalog_mutation_target(request.target)?;
     engine

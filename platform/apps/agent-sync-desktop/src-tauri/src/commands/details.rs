@@ -1,13 +1,12 @@
 use agent_sync_core::SyncEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use crate::{
     build_platform_context, collect_subagent_target_statuses, find_skill, find_subagent,
-    normalize_os_name, open_path, read_preview, read_skill_dir_tree, resolve_main_skill_file,
-    resolve_skill_root_dir, PlatformContext, SkillDetails, SubagentDetails,
-    MAX_MAIN_FILE_PREVIEW_CHARS, MAX_TREE_ENTRIES,
+    last_modified_seconds, normalize_os_name, open_path, read_preview, read_skill_dir_tree,
+    resolve_main_skill_file, resolve_skill_root_dir, PlatformContext, SkillDetails,
+    SubagentDetails, MAX_MAIN_FILE_PREVIEW_CHARS, MAX_TREE_ENTRIES,
 };
 
 #[tauri::command]
@@ -21,11 +20,7 @@ pub fn get_skill_details(skill_key: String) -> Result<SkillDetails, String> {
         read_preview(&main_file, MAX_MAIN_FILE_PREVIEW_CHARS);
     let (skill_dir_tree_preview, skill_dir_tree_preview_truncated) =
         read_skill_dir_tree(&skill_root, MAX_TREE_ENTRIES);
-    let last_modified_unix_seconds = fs::metadata(&main_file)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
+    let last_modified_unix_seconds = last_modified_seconds(&main_file);
 
     Ok(SkillDetails {
         skill,
@@ -54,11 +49,7 @@ pub fn get_subagent_details(subagent_id: String) -> Result<SubagentDetails, Stri
         read_preview(&main_file, MAX_MAIN_FILE_PREVIEW_CHARS);
     let (subagent_dir_tree_preview, subagent_dir_tree_preview_truncated) =
         read_skill_dir_tree(&subagent_root, MAX_TREE_ENTRIES);
-    let last_modified_unix_seconds = fs::metadata(&main_file)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
+    let last_modified_unix_seconds = last_modified_seconds(&main_file);
     let target_statuses = collect_subagent_target_statuses(
         &subagent.target_paths,
         main_file.parent(),

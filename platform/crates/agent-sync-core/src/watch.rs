@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 pub struct SyncWatchStream {
-    watcher: RecommendedWatcher,
+    _watcher: RecommendedWatcher,
     rx: Receiver<notify::Result<notify::Event>>,
 }
 
@@ -26,15 +26,14 @@ impl SyncWatchStream {
             }
         }
 
-        Ok(Self { watcher, rx })
+        Ok(Self {
+            _watcher: watcher,
+            rx,
+        })
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Option<notify::Result<notify::Event>> {
         self.rx.recv_timeout(timeout).ok()
-    }
-
-    pub fn _watcher_ref(&self) -> &RecommendedWatcher {
-        &self.watcher
     }
 }
 

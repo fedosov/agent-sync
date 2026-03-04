@@ -76,10 +76,7 @@ pub fn make_global(
 ) -> Result<SyncState, String> {
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "make_global")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     let skill = find_skill(&engine, &skill_key, Some(SkillLifecycleStatus::Active))?;
     engine
         .make_global(&skill, confirmed)
@@ -94,10 +91,7 @@ pub fn rename_skill(
 ) -> Result<SyncState, String> {
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "rename_skill")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     let skill = find_skill(&engine, &skill_key, Some(SkillLifecycleStatus::Active))?;
     engine
         .rename(&skill, &new_title)

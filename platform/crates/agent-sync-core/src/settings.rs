@@ -99,11 +99,7 @@ impl SyncPreferencesStore {
 
         let normalized = SyncAppSettings {
             version: 2,
-            auto_migrate_to_canonical_source: settings.auto_migrate_to_canonical_source,
-            allow_filesystem_changes: settings.allow_filesystem_changes,
-            workspace_discovery_roots: settings.workspace_discovery_roots.clone(),
-            window_state: settings.window_state.clone(),
-            ui_state: settings.ui_state.clone(),
+            ..settings.clone()
         };
 
         let mut payload = serde_json::to_vec_pretty(&normalized)?;

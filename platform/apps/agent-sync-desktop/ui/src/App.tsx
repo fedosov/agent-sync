@@ -290,22 +290,20 @@ export function App() {
     state?.mcp_servers?.find(
       (item) => mcpSelectionKey(item) === selectedMcpKey,
     ) ?? null;
-  const syncWarnings = useMemo(
-    () => state?.sync.warnings ?? [],
-    [state?.sync.warnings],
-  );
+  const syncWarnings = state?.sync.warnings ?? [];
   const selectedMcpWarnings = useMemo(() => {
     if (!selectedMcpServer) {
       return [];
     }
+    const warnings = state?.sync.warnings ?? [];
     const merged = [
       ...selectedMcpServer.warnings,
-      ...syncWarnings.filter((warning) =>
+      ...warnings.filter((warning) =>
         warningMentionsServer(warning, selectedMcpServer.server_key),
       ),
     ];
     return Array.from(new Set(merged));
-  }, [selectedMcpServer, syncWarnings]);
+  }, [selectedMcpServer, state?.sync.warnings]);
   const selectedAgentEntry =
     agentsReport?.entries.find((item) => item.id === selectedAgentEntryId) ??
     null;
@@ -323,18 +321,11 @@ export function App() {
       .slice(0, 8);
   }, [selectedAgentEntry]);
 
-  async function executeSkillMutation(
-    command: MutationCommand,
-    skillKey: string,
-  ) {
-    if (busy) {
-      return;
-    }
+  async function withErrorGuard(fn: () => Promise<void>): Promise<void> {
     setBusy(true);
     setError(null);
     try {
-      const next = await mutateSkill(command, skillKey);
-      applyState(next, skillKey);
+      await fn();
     } catch (invokeError) {
       setError(String(invokeError));
     } finally {
@@ -342,24 +333,30 @@ export function App() {
     }
   }
 
+  async function withBusyGuard(fn: () => Promise<void>): Promise<void> {
+    if (busy) return;
+    await withErrorGuard(fn);
+  }
+
+  async function executeSkillMutation(
+    command: MutationCommand,
+    skillKey: string,
+  ) {
+    await withBusyGuard(async () => {
+      const next = await mutateSkill(command, skillKey);
+      applyState(next, skillKey);
+    });
+  }
+
   async function executeCatalogMutation(
     request: CatalogMutationRequest,
     preferredSkillKey?: string | null,
   ) {
-    if (busy) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
+    await withBusyGuard(async () => {
       const next = await mutateCatalogItem(request);
       applySubagents(next.subagents);
       applyState(next, preferredSkillKey ?? selectedSkillKey);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function handleRenameSkill(skillKey: string, rawTitle: string) {
@@ -375,48 +372,30 @@ export function App() {
       return;
     }
 
-    setBusy(true);
-    setError(null);
-    try {
+    await withBusyGuard(async () => {
       const next = await renameSkill(skillKey, newTitle);
       applyState(next, normalizedKey);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function handleOpenSkillPath(
     skillKey: string,
     target: "folder" | "file",
   ) {
-    setBusy(true);
-    setError(null);
     setOpenTargetMenu(null);
-    try {
+    await withErrorGuard(async () => {
       await openSkillPath(skillKey, target);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function handleOpenSubagentPath(
     subagentId: string,
     target: "folder" | "file",
   ) {
-    setBusy(true);
-    setError(null);
     setOpenTargetMenu(null);
-    try {
+    await withErrorGuard(async () => {
       await openSubagentPath(subagentId, target);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function handleSetMcpEnabled(
@@ -424,9 +403,7 @@ export function App() {
     agent: "codex" | "claude" | "project",
     enabled: boolean,
   ) {
-    setBusy(true);
-    setError(null);
-    try {
+    await withErrorGuard(async () => {
       const next = await setMcpServerEnabled(
         server.server_key,
         agent,
@@ -435,11 +412,7 @@ export function App() {
         server.workspace,
       );
       applyState(next, selectedSkillKey);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function copyPath(path: string, errorLabel: string) {

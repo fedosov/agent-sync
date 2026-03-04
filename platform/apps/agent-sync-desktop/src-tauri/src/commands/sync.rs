@@ -1,9 +1,9 @@
 use agent_sync_core::{
-    AgentsContextReport, McpAgent, McpServerRecord, ScopeFilter, SkillRecord, SubagentRecord,
-    SyncEngine, SyncState, SyncTrigger,
+    AgentsContextReport, McpAgent, McpServerRecord, SkillRecord, SubagentRecord, SyncEngine,
+    SyncState, SyncTrigger,
 };
 
-use crate::{ensure_write_allowed, run_sync_with_lock, RuntimeState};
+use crate::{ensure_write_allowed, parse_scope_filter, run_sync_with_lock, RuntimeState};
 
 #[tauri::command]
 pub fn run_sync(
@@ -53,30 +53,14 @@ pub fn set_skill_starred(skill_id: String, starred: bool) -> Result<Vec<String>,
 #[tauri::command]
 pub fn list_skills(scope: Option<String>) -> Result<Vec<SkillRecord>, String> {
     let engine = SyncEngine::current();
-    let scope_filter = scope
-        .as_deref()
-        .map(|value| {
-            value
-                .parse::<ScopeFilter>()
-                .map_err(|_| format!("unsupported scope: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(ScopeFilter::All);
+    let scope_filter = parse_scope_filter(scope.as_deref())?;
     Ok(engine.list_skills(scope_filter))
 }
 
 #[tauri::command]
 pub fn list_subagents(scope: Option<String>) -> Result<Vec<SubagentRecord>, String> {
     let engine = SyncEngine::current();
-    let scope_filter = scope
-        .as_deref()
-        .map(|value| {
-            value
-                .parse::<ScopeFilter>()
-                .map_err(|_| format!("unsupported scope: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(ScopeFilter::All);
+    let scope_filter = parse_scope_filter(scope.as_deref())?;
     Ok(engine.list_subagents(scope_filter))
 }
 
@@ -99,10 +83,7 @@ pub fn set_mcp_server_enabled(
     let parsed = agent
         .parse::<McpAgent>()
         .map_err(|error| error.to_string())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .set_mcp_server_enabled(
             &server_key,
@@ -121,10 +102,7 @@ pub fn fix_sync_warning(
 ) -> Result<(), String> {
     let engine = SyncEngine::current();
     ensure_write_allowed(&engine, "fix_sync_warning")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
+    let _guard = runtime.acquire_sync_lock()?;
     engine
         .fix_sync_warning(&warning)
         .map_err(|error| error.to_string())?;
