@@ -1,23 +1,42 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AgentLogoIcon } from "./components/catalog/AgentLogoIcon";
+import { SkillListPanel } from "./components/catalog/SkillListPanel";
+import { SubagentListPanel } from "./components/catalog/SubagentListPanel";
+import { ScopeMarker } from "./components/catalog/ScopeMarker";
+import { AuditLogDialog } from "./components/AuditLogDialog";
+import { AgentsDetailsPanel } from "./components/details/AgentsDetailsPanel";
+import { McpDetailsPanel } from "./components/details/McpDetailsPanel";
+import { SkillDetailsPanel } from "./components/details/SkillDetailsPanel";
+import { SubagentDetailsPanel } from "./components/details/SubagentDetailsPanel";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
+import { useSkillDetails } from "./hooks/useSkillDetails";
+import { useSubagentDetails } from "./hooks/useSubagentDetails";
+import { useSyncState, mcpSelectionKey } from "./hooks/useSyncState";
+import {
+  toTitleCase,
+  subagentStatus,
+  mcpStatus,
+  statusRank,
+  syncStatusVariant,
+  warningMentionsServer,
+  syncWarningFixSummary,
+  isFixableSyncWarning,
+  severityRank,
+  severityDotClass,
+  readStoredFocusKind,
+  mcpTarget,
+  mcpDeleteLabel,
+  CATALOG_FOCUS_STORAGE_KEY,
+} from "./lib/catalogUtils";
 import { getVisibleMcpAgents } from "./lib/mcpAgents";
 import { compactPath } from "./lib/formatting";
 import { cn } from "./lib/utils";
 import {
-  clearAuditEvents,
-  getAgentsContextReport,
   listDotagentsMcp,
   listDotagentsSkills,
-  getRuntimeControls,
-  getSkillDetails,
-  getState,
-  getSubagentDetails,
-  listAuditEvents,
-  listSubagents,
   mutateCatalogItem,
   mutateSkill,
   openSubagentPath,
@@ -26,33 +45,15 @@ import {
   migrateDotagents,
   fixSyncWarning,
   runDotagentsSync,
-  runSync,
   setAllowFilesystemChanges,
   setMcpServerEnabled,
 } from "./tauriApi";
-import {
-  formatUnixTime,
-  normalizeSkillKey,
-  pickSelectedSkillKey,
-  sortAndFilterSkills,
-} from "./skillUtils";
+import { normalizeSkillKey, sortAndFilterSkills } from "./skillUtils";
 import type {
-  AgentContextSeverity,
-  AgentsContextReport,
-  AuditEvent,
-  AuditEventStatus,
   CatalogMutationRequest,
-  CatalogMutationTarget,
   FocusKind,
   McpServerRecord,
   MutationCommand,
-  RuntimeControls,
-  SkillLifecycleStatus,
-  SubagentDetails,
-  SubagentRecord,
-  SkillDetails,
-  SyncHealthStatus,
-  SyncState,
 } from "./types";
 
 type DeleteDialogState = {
@@ -61,61 +62,9 @@ type DeleteDialogState = {
 } | null;
 type OpenTargetMenu = "skill" | "subagent" | null;
 type ActionsMenuTarget = "skill" | "subagent" | "mcp" | null;
-type AuditStatusFilter = AuditEventStatus | "all";
 type DotagentsProofStatus = "idle" | "running" | "ok" | "error";
-const CATALOG_FOCUS_STORAGE_KEY = "agent-sync.catalog.focusKind.v1";
 const DOTAGENTS_MIGRATION_REQUIRED =
   "migration required before strict dotagents sync";
-
-function toTitleCase(value: string): string {
-  if (!value) {
-    return value;
-  }
-  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
-}
-
-function mcpSelectionKey(server: McpServerRecord): string {
-  return `${server.scope}::${server.workspace ?? "global"}::${server.server_key}`;
-}
-
-function subagentStatus(subagent: SubagentRecord): SkillLifecycleStatus {
-  return subagent.status ?? "active";
-}
-
-function mcpStatus(server: McpServerRecord): SkillLifecycleStatus {
-  return server.status ?? "active";
-}
-
-function statusRank(status: SkillLifecycleStatus): number {
-  return status === "active" ? 0 : 1;
-}
-
-function syncStatusVariant(status: SyncHealthStatus | undefined) {
-  switch (status) {
-    case "ok":
-      return "success" as const;
-    case "failed":
-      return "error" as const;
-    case "syncing":
-      return "warning" as const;
-    default:
-      return "outline" as const;
-  }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function warningMentionsServer(warning: string, serverKey: string): boolean {
-  const escaped = escapeRegExp(serverKey);
-  const catalogIdPattern = new RegExp(`::${escaped}(?=$|[^A-Za-z0-9_-])`);
-  return (
-    warning.includes(`'${serverKey}'`) ||
-    warning.includes(`"${serverKey}"`) ||
-    catalogIdPattern.test(warning)
-  );
-}
 
 function renderSyncWarningText(warning: string) {
   const term = "central catalog";
@@ -136,169 +85,46 @@ function renderSyncWarningText(warning: string) {
   );
 }
 
-function syncWarningFixSummary(warning: string): string | null {
-  if (warning.startsWith("Broken unmanaged Claude MCP '")) {
-    return "Will remove broken unmanaged Claude entry";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes(" exists in ") &&
-    warning.endsWith(" but is unmanaged in central catalog")
-  ) {
-    return "Will add server to managed MCP list";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes("' has inline secret-like env value for '") &&
-    warning.endsWith("'")
-  ) {
-    return "Will replace inline secret with env variable (env must be set first)";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes("' has inline secret-like argument '") &&
-    warning.endsWith("'")
-  ) {
-    return "Will replace secret argument with env variable (env must be set first)";
-  }
-  if (
-    warning.startsWith("Skipped managed Codex MCP '") &&
-    warning.includes("' because unmanaged entry already exists in ")
-  ) {
-    return "Will remove duplicate unmanaged Codex entry";
-  }
-  if (
-    warning.startsWith("Skipped project MCP target ") &&
-    warning.endsWith(" because file does not exist")
-  ) {
-    return "Will create missing project MCP file";
-  }
-  return null;
-}
-
-function isFixableSyncWarning(warning: string): boolean {
-  return syncWarningFixSummary(warning) !== null;
-}
-
-function formatIsoTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
-}
-
-function parseAuditStatusFilter(value: string): AuditStatusFilter {
-  switch (value) {
-    case "success":
-    case "failed":
-    case "blocked":
-    case "all":
-      return value;
-    default:
-      return "all";
-  }
-}
-
-function parseFocusKind(value: string | null): FocusKind {
-  if (
-    value === "skills" ||
-    value === "subagents" ||
-    value === "mcp" ||
-    value === "agents"
-  ) {
-    return value;
-  }
-  return "skills";
-}
-
-function severityRank(severity: AgentContextSeverity): number {
-  if (severity === "critical") return 2;
-  if (severity === "warning") return 1;
-  return 0;
-}
-
-function severityDotClass(severity: AgentContextSeverity): string {
-  return cn(
-    "inline-block h-2 w-2 rounded-full",
-    severity === "critical"
-      ? "bg-red-500"
-      : severity === "warning"
-        ? "bg-amber-500"
-        : "bg-emerald-500",
-  );
-}
-
-function readStoredFocusKind(): FocusKind {
-  if (typeof window === "undefined") {
-    return "skills";
-  }
-  try {
-    return parseFocusKind(
-      window.localStorage.getItem(CATALOG_FOCUS_STORAGE_KEY),
-    );
-  } catch {
-    return "skills";
-  }
-}
-
-function ScopeMarker({ scope }: { scope: string }) {
-  const scopeLabel = scope === "global" ? "Global" : "Project";
-  return (
-    <span className="text-[10px] text-muted-foreground">{scopeLabel}</span>
-  );
-}
-
-function mcpTarget(server: McpServerRecord): CatalogMutationTarget {
-  return {
-    kind: "mcp",
-    serverKey: server.server_key,
-    scope: server.scope,
-    workspace: server.workspace,
-  };
-}
-
-function mcpDeleteLabel(server: McpServerRecord): string {
-  if (server.scope === "project") {
-    return `MCP server "${server.server_key}" (Project: ${server.workspace ?? "unknown workspace"})`;
-  }
-  return `MCP server "${server.server_key}" (Global)`;
-}
-
 export function App() {
-  const [state, setState] = useState<SyncState | null>(null);
-  const [runtimeControls, setRuntimeControls] =
-    useState<RuntimeControls | null>(null);
-  const [details, setDetails] = useState<SkillDetails | null>(null);
-  const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
-  const [agentsReport, setAgentsReport] = useState<AgentsContextReport | null>(
-    null,
-  );
-  const [subagentDetails, setSubagentDetails] =
-    useState<SubagentDetails | null>(null);
+  const {
+    state,
+    runtimeControls,
+    subagents,
+    agentsReport,
+    selectedSkillKey,
+    selectedSubagentId,
+    selectedMcpKey,
+    selectedAgentEntryId,
+    busy,
+    error,
+    setError,
+    setSelectedSkillKey,
+    setSelectedSubagentId,
+    setSelectedMcpKey,
+    setSelectedAgentEntryId,
+    setRuntimeControls,
+    setBusy,
+    loadRuntimeControls,
+    refreshState,
+    applyState,
+    applySubagents,
+  } = useSyncState();
+
+  const { details, renameDraft, setRenameDraft } = useSkillDetails({
+    selectedSkillKey,
+    onError: setError,
+  });
+
+  const { subagentDetails } = useSubagentDetails({
+    selectedSubagentId,
+    onError: setError,
+  });
+
   const [auditOpen, setAuditOpen] = useState(false);
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [auditStatusFilter, setAuditStatusFilter] =
-    useState<AuditStatusFilter>("all");
-  const [auditActionFilter, setAuditActionFilter] = useState("");
-  const [auditBusy, setAuditBusy] = useState(false);
-  const [clearAuditDialogOpen, setClearAuditDialogOpen] = useState(false);
-  const [clearAuditBusy, setClearAuditBusy] = useState(false);
   const [focusKind, setFocusKind] = useState<FocusKind>(() =>
     readStoredFocusKind(),
   );
-  const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null);
-  const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
-    null,
-  );
-  const [selectedMcpKey, setSelectedMcpKey] = useState<string | null>(null);
-  const [selectedAgentEntryId, setSelectedAgentEntryId] = useState<
-    string | null
-  >(null);
   const [query, setQuery] = useState("");
-  const [renameDraft, setRenameDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [openTargetMenu, setOpenTargetMenu] = useState<OpenTargetMenu>(null);
   const [actionsMenuTarget, setActionsMenuTarget] =
     useState<ActionsMenuTarget>(null);
@@ -313,142 +139,6 @@ export function App() {
   const [fixingSyncWarning, setFixingSyncWarning] = useState<string | null>(
     null,
   );
-  const refreshTokenRef = useRef(0);
-
-  const applyState = useCallback(
-    (next: SyncState, preferredKey?: string | null) => {
-      setState(next);
-      setSelectedSkillKey((previousKey) =>
-        pickSelectedSkillKey(next.skills, preferredKey, previousKey),
-      );
-    },
-    [],
-  );
-
-  const applySubagents = useCallback(
-    async (
-      preferredKey?: string | null,
-      preloadedSubagents?: SubagentRecord[],
-    ) => {
-      const nextSubagents = preloadedSubagents ?? (await listSubagents("all"));
-      setSubagents(nextSubagents);
-      setSelectedSubagentId((prev) => {
-        if (
-          preferredKey &&
-          nextSubagents.some((item) => item.id === preferredKey)
-        ) {
-          return preferredKey;
-        }
-        if (prev && nextSubagents.some((item) => item.id === prev)) {
-          return prev;
-        }
-        return nextSubagents[0]?.id ?? null;
-      });
-    },
-    [],
-  );
-
-  const applyAgentsReport = useCallback(
-    (nextReport: AgentsContextReport, preferredId?: string | null) => {
-      setAgentsReport(nextReport);
-      setSelectedAgentEntryId((prev) => {
-        if (
-          preferredId &&
-          nextReport.entries.some((item) => item.id === preferredId)
-        ) {
-          return preferredId;
-        }
-        if (prev && nextReport.entries.some((item) => item.id === prev)) {
-          return prev;
-        }
-        return nextReport.entries[0]?.id ?? null;
-      });
-    },
-    [],
-  );
-
-  const refreshState = useCallback(
-    async (
-      preferredKey?: string | null,
-      syncFirst = false,
-      withBusy = true,
-    ) => {
-      const requestId = ++refreshTokenRef.current;
-      if (withBusy) {
-        setBusy(true);
-      }
-      setError(null);
-      try {
-        const next = syncFirst ? await runSync() : await getState();
-        const [nextSubagents, nextAgentsReport] = await Promise.all([
-          listSubagents("all"),
-          getAgentsContextReport(),
-        ]);
-        if (requestId !== refreshTokenRef.current) {
-          return;
-        }
-        await applySubagents(preferredKey, nextSubagents);
-        applyAgentsReport(nextAgentsReport);
-        applyState(next, preferredKey);
-      } catch (invokeError) {
-        if (requestId !== refreshTokenRef.current) {
-          return;
-        }
-        setError(String(invokeError));
-        try {
-          const [fallbackState, fallbackSubagents, fallbackAgentsReport] =
-            await Promise.all([
-              getState(),
-              listSubagents("all"),
-              getAgentsContextReport(),
-            ]);
-          if (requestId !== refreshTokenRef.current) {
-            return;
-          }
-          await applySubagents(preferredKey, fallbackSubagents);
-          applyAgentsReport(fallbackAgentsReport);
-          applyState(fallbackState, preferredKey);
-        } catch (fallbackError) {
-          if (requestId !== refreshTokenRef.current) {
-            return;
-          }
-          setError(
-            `${String(invokeError)}\nFallback failed: ${String(fallbackError)}`,
-          );
-        }
-      } finally {
-        if (withBusy) {
-          setBusy(false);
-        }
-      }
-    },
-    [applyAgentsReport, applyState, applySubagents],
-  );
-
-  const loadAudit = useCallback(async () => {
-    setAuditBusy(true);
-    try {
-      const next = await listAuditEvents({
-        limit: 200,
-        status: auditStatusFilter === "all" ? undefined : auditStatusFilter,
-        action: auditActionFilter,
-      });
-      setAuditEvents(next);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setAuditBusy(false);
-    }
-  }, [auditActionFilter, auditStatusFilter]);
-
-  const loadRuntime = useCallback(async () => {
-    try {
-      const next = await getRuntimeControls();
-      setRuntimeControls(next);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    }
-  }, []);
 
   const handleAllowToggle = useCallback(
     async (allow: boolean) => {
@@ -457,34 +147,23 @@ export function App() {
       try {
         const next = await setAllowFilesystemChanges(allow);
         setRuntimeControls(next);
-        await refreshState(selectedSkillKey, false);
+        await refreshState({ preferredSkillKey: selectedSkillKey });
       } catch (invokeError) {
         setError(String(invokeError));
-        await loadRuntime();
+        await loadRuntimeControls();
       } finally {
         setBusy(false);
       }
     },
-    [loadRuntime, refreshState, selectedSkillKey],
+    [
+      loadRuntimeControls,
+      refreshState,
+      selectedSkillKey,
+      setBusy,
+      setError,
+      setRuntimeControls,
+    ],
   );
-
-  useEffect(() => {
-    void (async () => {
-      await loadRuntime();
-      await refreshState(undefined, false);
-    })();
-  }, [loadRuntime, refreshState]);
-
-  useEffect(() => {
-    if (!state || state.skills.length === 0) {
-      setSelectedSkillKey(null);
-      setDetails(null);
-      return;
-    }
-    setSelectedSkillKey((current) =>
-      pickSelectedSkillKey(state.skills, current),
-    );
-  }, [state]);
 
   useEffect(() => {
     try {
@@ -495,70 +174,6 @@ export function App() {
   }, [focusKind]);
 
   useEffect(() => {
-    if (!selectedSkillKey) {
-      setDetails(null);
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const next = await getSkillDetails(selectedSkillKey);
-        if (!cancelled) {
-          setDetails(next);
-          setRenameDraft(next.skill.name);
-        }
-      } catch (invokeError) {
-        if (!cancelled) {
-          setError(String(invokeError));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSkillKey]);
-
-  useEffect(() => {
-    if (!selectedSubagentId) {
-      setSubagentDetails(null);
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const next = await getSubagentDetails(selectedSubagentId);
-        if (!cancelled) {
-          setSubagentDetails(next);
-        }
-      } catch (invokeError) {
-        if (!cancelled) {
-          setError(String(invokeError));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSubagentId]);
-
-  useEffect(() => {
-    const servers = state?.mcp_servers ?? [];
-    setSelectedMcpKey((current) => {
-      if (
-        current &&
-        servers.some((item) => mcpSelectionKey(item) === current)
-      ) {
-        return current;
-      }
-      return servers[0] ? mcpSelectionKey(servers[0]) : null;
-    });
-  }, [state]);
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
         return;
@@ -566,7 +181,6 @@ export function App() {
       setOpenTargetMenu(null);
       setActionsMenuTarget(null);
       setDeleteDialog(null);
-      setClearAuditDialogOpen(false);
       setAuditOpen(false);
     };
 
@@ -582,21 +196,13 @@ export function App() {
     }
 
     const timer = window.setInterval(() => {
-      void refreshState(undefined, false, false);
-      if (auditOpen) {
-        void loadAudit();
-      }
+      void refreshState({ withBusy: false });
     }, 3000);
 
     return () => {
       window.clearInterval(timer);
     };
-  }, [
-    auditOpen,
-    loadAudit,
-    refreshState,
-    runtimeControls?.allow_filesystem_changes,
-  ]);
+  }, [refreshState, runtimeControls?.allow_filesystem_changes]);
 
   const filteredSkills = useMemo(() => {
     if (!state) return [];
@@ -747,7 +353,7 @@ export function App() {
     setError(null);
     try {
       const next = await mutateCatalogItem(request);
-      await applySubagents(undefined, next.subagents);
+      applySubagents(next.subagents);
       applyState(next, preferredSkillKey ?? selectedSkillKey);
     } catch (invokeError) {
       setError(String(invokeError));
@@ -851,7 +457,10 @@ export function App() {
       );
       return;
     }
-    await refreshState(selectedSkillKey, true);
+    await refreshState({
+      preferredSkillKey: selectedSkillKey,
+      syncFirst: true,
+    });
   }
 
   async function handleFixSyncWarning(warning: string) {
@@ -869,7 +478,10 @@ export function App() {
     setError(null);
     try {
       await fixSyncWarning(warning);
-      await refreshState(selectedSkillKey, true);
+      await refreshState({
+        preferredSkillKey: selectedSkillKey,
+        syncFirst: true,
+      });
     } catch (invokeError) {
       setError(String(invokeError));
     } finally {
@@ -897,7 +509,10 @@ export function App() {
       setDotagentsProofSummary(
         `Dotagents verified: skills=${skills.length}, mcp=${mcp.length}.`,
       );
-      await refreshState(selectedSkillKey, false, false);
+      await refreshState({
+        preferredSkillKey: selectedSkillKey,
+        withBusy: false,
+      });
     } catch (invokeError) {
       const message = String(invokeError);
       const migrationRequired = message
@@ -956,33 +571,13 @@ export function App() {
     }
   }
 
-  async function handleOpenAuditLog() {
-    setAuditOpen(true);
-    setClearAuditDialogOpen(false);
-    await loadAudit();
-  }
-
-  function handleCloseAuditLog() {
-    setAuditOpen(false);
-    setClearAuditDialogOpen(false);
-  }
-
-  async function handleConfirmClearAuditLogs() {
-    setClearAuditBusy(true);
-    setError(null);
-    try {
-      await clearAuditEvents();
-      await loadAudit();
-      setClearAuditDialogOpen(false);
-    } catch (invokeError) {
-      setError(String(invokeError));
-    } finally {
-      setClearAuditBusy(false);
-    }
-  }
-
   function handleCatalogTabChange(next: FocusKind) {
     setFocusKind(next);
+    setActionsMenuTarget(null);
+    setOpenTargetMenu(null);
+  }
+
+  function closeMenus() {
     setActionsMenuTarget(null);
     setOpenTargetMenu(null);
   }
@@ -1097,7 +692,7 @@ export function App() {
                 size="sm"
                 variant="ghost"
                 disabled={busy}
-                onClick={() => void handleOpenAuditLog()}
+                onClick={() => setAuditOpen(true)}
               >
                 Audit log
               </Button>
@@ -1321,100 +916,29 @@ export function App() {
                 </div>
 
                 {focusKind === "skills" ? (
-                  filteredSkills.length === 0 ? (
-                    <p className="rounded-md bg-muted/20 px-2 py-2 text-xs text-muted-foreground">
-                      {activeCatalogEmptyText}
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {filteredSkills.map((skill) => {
-                        const selected = skill.skill_key === selectedSkillKey;
-                        return (
-                          <li key={skill.id}>
-                            <button
-                              type="button"
-                              className={cn(
-                                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
-                                selected
-                                  ? "bg-accent/85 text-foreground"
-                                  : "hover:bg-accent/55",
-                              )}
-                              onClick={() => {
-                                setSelectedSkillKey(skill.skill_key);
-                                setActionsMenuTarget(null);
-                                setOpenTargetMenu(null);
-                              }}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate text-sm font-medium">
-                                  {skill.name}
-                                </span>
-                                <ScopeMarker scope={skill.scope} />
-                              </div>
-                              <p
-                                aria-hidden="true"
-                                className="mt-0.5 truncate text-[11px] text-muted-foreground"
-                              >
-                                {skill.skill_key}
-                              </p>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )
+                  <SkillListPanel
+                    skills={filteredSkills}
+                    selectedSkillKey={selectedSkillKey}
+                    emptyText={activeCatalogEmptyText}
+                    onSelect={(skillKey) => {
+                      setSelectedSkillKey(skillKey);
+                      closeMenus();
+                    }}
+                    onCloseMenus={closeMenus}
+                  />
                 ) : null}
 
                 {focusKind === "subagents" ? (
-                  filteredSubagents.length === 0 ? (
-                    <p className="rounded-md bg-muted/20 px-2 py-2 text-xs text-muted-foreground">
-                      {activeCatalogEmptyText}
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {filteredSubagents.map((subagent) => {
-                        const selected = subagent.id === selectedSubagentId;
-                        return (
-                          <li key={subagent.id}>
-                            <button
-                              type="button"
-                              className={cn(
-                                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
-                                selected
-                                  ? "bg-accent/85 text-foreground"
-                                  : "hover:bg-accent/55",
-                              )}
-                              onClick={() => {
-                                setSelectedSubagentId(subagent.id);
-                                setActionsMenuTarget(null);
-                                setOpenTargetMenu(null);
-                              }}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate text-sm font-medium">
-                                  {subagent.name}
-                                </span>
-                                <span className="inline-flex items-center gap-1.5">
-                                  <ScopeMarker scope={subagent.scope} />
-                                  {subagentStatus(subagent) === "archived" ? (
-                                    <span className="text-[10px] text-muted-foreground">
-                                      Archived
-                                    </span>
-                                  ) : null}
-                                </span>
-                              </div>
-                              <p
-                                aria-hidden="true"
-                                className="mt-0.5 truncate text-[11px] text-muted-foreground"
-                              >
-                                {subagent.subagent_key}
-                              </p>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )
+                  <SubagentListPanel
+                    subagents={filteredSubagents}
+                    selectedSubagentId={selectedSubagentId}
+                    emptyText={activeCatalogEmptyText}
+                    onSelect={(subagentId) => {
+                      setSelectedSubagentId(subagentId);
+                      closeMenus();
+                    }}
+                    onCloseMenus={closeMenus}
+                  />
                 ) : null}
 
                 {focusKind === "mcp" ? (
@@ -1445,8 +969,7 @@ export function App() {
                               )}
                               onClick={() => {
                                 setSelectedMcpKey(key);
-                                setActionsMenuTarget(null);
-                                setOpenTargetMenu(null);
+                                closeMenus();
                               }}
                             >
                               <div className="flex items-start justify-between gap-2">
@@ -1528,8 +1051,7 @@ export function App() {
                               )}
                               onClick={() => {
                                 setSelectedAgentEntryId(entry.id);
-                                setActionsMenuTarget(null);
-                                setOpenTargetMenu(null);
+                                closeMenus();
                               }}
                             >
                               <div className="flex items-center justify-between gap-2">
@@ -1572,1137 +1094,217 @@ export function App() {
             ) : null}
 
             {showSkill ? (
-              <>
-                <CardHeader className="border-b border-border/60 pb-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-lg leading-tight">
-                        {details.skill.name}
-                      </CardTitle>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {details.skill.skill_key}
-                      </p>
-                    </div>
-                    <div className="relative flex items-center gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        aria-expanded={openTargetMenu === "skill"}
-                        onClick={() => {
-                          setOpenTargetMenu((prev) =>
-                            prev === "skill" ? null : "skill",
-                          );
-                          setActionsMenuTarget(null);
-                        }}
-                      >
-                        Open…
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="More actions"
-                        disabled={busy}
-                        aria-expanded={actionsMenuTarget === "skill"}
-                        onClick={() => {
-                          setActionsMenuTarget((prev) =>
-                            prev === "skill" ? null : "skill",
-                          );
-                          setOpenTargetMenu(null);
-                        }}
-                      >
-                        ⋯
-                      </Button>
-
-                      {openTargetMenu === "skill" ? (
-                        <div
-                          role="menu"
-                          className="absolute right-14 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
-                            onClick={() =>
-                              void handleOpenSkillPath(
-                                details.skill.skill_key,
-                                "folder",
-                              )
-                            }
-                          >
-                            Open folder
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={!details.main_file_exists}
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
-                            onClick={() =>
-                              void handleOpenSkillPath(
-                                details.skill.skill_key,
-                                "file",
-                              )
-                            }
-                          >
-                            Open file
-                          </button>
-                        </div>
-                      ) : null}
-
-                      {actionsMenuTarget === "skill" ? (
-                        <div
-                          role="menu"
-                          className="absolute right-0 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
-                        >
-                          {details.skill.status === "active" ? (
-                            <>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={busy}
-                                className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                                onClick={() => {
-                                  setActionsMenuTarget(null);
-                                  void executeCatalogMutation(
-                                    {
-                                      action: "archive",
-                                      target: {
-                                        kind: "skill",
-                                        skillKey: details.skill.skill_key,
-                                      },
-                                      confirmed: true,
-                                    },
-                                    details.skill.skill_key,
-                                  );
-                                }}
-                              >
-                                Archive
-                              </button>
-                              {details.skill.scope === "project" ? (
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  disabled={busy}
-                                  className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                                  onClick={() => {
-                                    setActionsMenuTarget(null);
-                                    void executeSkillMutation(
-                                      "make_global",
-                                      details.skill.skill_key,
-                                    );
-                                  }}
-                                >
-                                  Make global
-                                </button>
-                              ) : null}
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              disabled={busy}
-                              className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => {
-                                setActionsMenuTarget(null);
-                                void executeCatalogMutation(
-                                  {
-                                    action: "restore",
-                                    target: {
-                                      kind: "skill",
-                                      skillKey: details.skill.skill_key,
-                                    },
-                                    confirmed: true,
-                                  },
-                                  details.skill.skill_key,
-                                );
-                              }}
-                            >
-                              Restore
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={busy}
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            onClick={() => {
-                              setActionsMenuTarget(null);
-                              setDeleteDialog({
-                                request: {
-                                  action: "delete",
-                                  target: {
-                                    kind: "skill",
-                                    skillKey: details.skill.skill_key,
-                                  },
-                                  confirmed: true,
-                                },
-                                label: `skill "${details.skill.name}"`,
-                              });
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-                  <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-                    <div>
-                      <dt className="text-muted-foreground">Workspace</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {details.skill.workspace ?? "-"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Updated</dt>
-                      <dd className="mt-0.5">
-                        {formatUnixTime(details.last_modified_unix_seconds)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Install status</dt>
-                      <dd className="mt-0.5">
-                        {details.skill.install_status ?? "n/a"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Source</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {details.skill.source ?? "-"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Main file</dt>
-                      <dd className="mt-0.5 flex items-center gap-2 font-mono">
-                        <span title={details.main_file_path}>
-                          {compactPath(details.main_file_path)}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label="Copy main path"
-                          onClick={() =>
-                            void copyPath(
-                              details.main_file_path,
-                              "Copy main path failed.",
-                            )
-                          }
-                        >
-                          Copy
-                        </Button>
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Canonical path</dt>
-                      <dd className="mt-0.5 flex items-center gap-2 font-mono">
-                        <span title={details.skill.canonical_source_path}>
-                          {compactPath(details.skill.canonical_source_path)}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label="Copy canonical path"
-                          onClick={() =>
-                            void copyPath(
-                              details.skill.canonical_source_path,
-                              "Copy canonical path failed.",
-                            )
-                          }
-                        >
-                          Copy
-                        </Button>
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      SKILL.md preview
-                    </h3>
-                    {details.main_file_body_preview ? (
-                      <pre className="max-h-64 overflow-auto rounded-md bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
-                        {details.main_file_body_preview}
-                      </pre>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        No readable preview available.
-                      </p>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      SKILL dir tree
-                    </h3>
-                    {details.skill_dir_tree_preview ? (
-                      <pre className="max-h-48 overflow-auto rounded-md bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
-                        {details.skill_dir_tree_preview}
-                      </pre>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        No readable directory tree available.
-                      </p>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Targets
-                    </h3>
-                    {details.skill.target_paths.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No target paths.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {details.skill.target_paths.map((path) => (
-                          <li
-                            key={path}
-                            className="rounded-md bg-muted/20 p-2 font-mono"
-                          >
-                            {path}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-
-                  {details.skill.status === "active" ? (
-                    <form
-                      className="flex flex-wrap items-center gap-2 border-t border-border/50 pt-3"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void handleRenameSkill(
-                          details.skill.skill_key,
-                          renameDraft,
-                        );
-                      }}
-                    >
-                      <Input
-                        value={renameDraft}
-                        onChange={(event) =>
-                          setRenameDraft(event.currentTarget.value)
-                        }
-                        placeholder="New skill title"
-                        className="min-w-[220px] flex-1"
-                      />
-                      <Button
-                        type="submit"
-                        size="sm"
-                        disabled={
-                          busy ||
-                          renameDraft.trim().length === 0 ||
-                          renameDraft.trim() === details.skill.name
-                        }
-                      >
-                        Save name
-                      </Button>
-                    </form>
-                  ) : null}
-                </CardContent>
-              </>
+              <SkillDetailsPanel
+                details={details}
+                busy={busy}
+                renameDraft={renameDraft}
+                openTargetMenu={openTargetMenu === "skill"}
+                actionsMenuOpen={actionsMenuTarget === "skill"}
+                onRenameDraftChange={setRenameDraft}
+                onRenameSubmit={() =>
+                  void handleRenameSkill(details.skill.skill_key, renameDraft)
+                }
+                onToggleOpenTargetMenu={() => {
+                  setOpenTargetMenu((prev) =>
+                    prev === "skill" ? null : "skill",
+                  );
+                  setActionsMenuTarget(null);
+                }}
+                onToggleActionsMenu={() => {
+                  setActionsMenuTarget((prev) =>
+                    prev === "skill" ? null : "skill",
+                  );
+                  setOpenTargetMenu(null);
+                }}
+                onOpenPath={(target) =>
+                  void handleOpenSkillPath(details.skill.skill_key, target)
+                }
+                onArchive={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation(
+                    {
+                      action: "archive",
+                      target: {
+                        kind: "skill",
+                        skillKey: details.skill.skill_key,
+                      },
+                      confirmed: true,
+                    },
+                    details.skill.skill_key,
+                  );
+                }}
+                onMakeGlobal={() => {
+                  setActionsMenuTarget(null);
+                  void executeSkillMutation(
+                    "make_global",
+                    details.skill.skill_key,
+                  );
+                }}
+                onRestore={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation(
+                    {
+                      action: "restore",
+                      target: {
+                        kind: "skill",
+                        skillKey: details.skill.skill_key,
+                      },
+                      confirmed: true,
+                    },
+                    details.skill.skill_key,
+                  );
+                }}
+                onRequestDelete={() => {
+                  setActionsMenuTarget(null);
+                  setDeleteDialog({
+                    request: {
+                      action: "delete",
+                      target: {
+                        kind: "skill",
+                        skillKey: details.skill.skill_key,
+                      },
+                      confirmed: true,
+                    },
+                    label: `skill "${details.skill.name}"`,
+                  });
+                }}
+                onCopyPath={(path, errorLabel) =>
+                  void copyPath(path, errorLabel)
+                }
+              />
             ) : null}
 
             {showMcp ? (
-              <>
-                <CardHeader className="border-b border-border/60 pb-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-lg leading-tight">
-                        {selectedMcpServer.server_key}
-                      </CardTitle>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {`${selectedMcpServer.transport.toUpperCase()} · ${toTitleCase(selectedMcpServer.scope)}`}
-                      </p>
-                    </div>
-                    <div className="relative">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="More actions"
-                        disabled={busy}
-                        aria-expanded={actionsMenuTarget === "mcp"}
-                        onClick={() =>
-                          setActionsMenuTarget((prev) =>
-                            prev === "mcp" ? null : "mcp",
-                          )
-                        }
-                      >
-                        ⋯
-                      </Button>
-                      {actionsMenuTarget === "mcp" ? (
-                        <div
-                          role="menu"
-                          className="absolute right-0 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
-                        >
-                          {mcpStatus(selectedMcpServer) === "active" ? (
-                            <>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={busy}
-                                className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                                onClick={() => {
-                                  setActionsMenuTarget(null);
-                                  void executeCatalogMutation({
-                                    action: "archive",
-                                    target: mcpTarget(selectedMcpServer),
-                                    confirmed: true,
-                                  });
-                                }}
-                              >
-                                Archive
-                              </button>
-                              {selectedMcpServer.scope === "project" ? (
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  disabled={busy}
-                                  className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                                  onClick={() => {
-                                    setActionsMenuTarget(null);
-                                    void executeCatalogMutation({
-                                      action: "make_global",
-                                      target: mcpTarget(selectedMcpServer),
-                                      confirmed: true,
-                                    });
-                                  }}
-                                >
-                                  Make global
-                                </button>
-                              ) : null}
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              disabled={busy}
-                              className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => {
-                                setActionsMenuTarget(null);
-                                void executeCatalogMutation({
-                                  action: "restore",
-                                  target: mcpTarget(selectedMcpServer),
-                                  confirmed: true,
-                                });
-                              }}
-                            >
-                              Restore
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={busy}
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            onClick={() => {
-                              setActionsMenuTarget(null);
-                              setDeleteDialog({
-                                request: {
-                                  action: "delete",
-                                  target: mcpTarget(selectedMcpServer),
-                                  confirmed: true,
-                                },
-                                label: mcpDeleteLabel(selectedMcpServer),
-                              });
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-                  <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-                    <div>
-                      <dt className="text-muted-foreground">Status</dt>
-                      <dd className="mt-0.5 capitalize">
-                        {mcpStatus(selectedMcpServer)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Command</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {selectedMcpServer.command ?? "-"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">URL</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {selectedMcpServer.url ?? "-"}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Enable by agent
-                    </h3>
-                    <div className="flex flex-wrap gap-3">
-                      {getVisibleMcpAgents(selectedMcpServer.scope).map(
-                        (agent) => {
-                          const enabled =
-                            selectedMcpServer.enabled_by_agent[agent];
-                          return (
-                            <div
-                              key={agent}
-                              className="inline-flex items-center gap-2 px-1 py-1"
-                            >
-                              <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-                                <span
-                                  role="img"
-                                  aria-label={`${agent} agent`}
-                                  className={cn(
-                                    "inline-flex items-center transition-colors",
-                                    enabled
-                                      ? "text-emerald-500"
-                                      : "text-muted-foreground/70 opacity-60",
-                                  )}
-                                >
-                                  <AgentLogoIcon
-                                    agent={agent}
-                                    className="h-3.5 w-3.5"
-                                  />
-                                </span>
-                                <span>{agent}</span>
-                              </span>
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-label={`${agent} toggle`}
-                                aria-checked={enabled}
-                                disabled={
-                                  busy ||
-                                  mcpStatus(selectedMcpServer) === "archived"
-                                }
-                                onClick={() =>
-                                  void handleSetMcpEnabled(
-                                    selectedMcpServer,
-                                    agent,
-                                    !enabled,
-                                  )
-                                }
-                                className={cn(
-                                  "relative inline-flex h-6 w-11 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
-                                  enabled
-                                    ? "border-primary/70 bg-primary/80"
-                                    : "border-border bg-muted-foreground/25",
-                                )}
-                              >
-                                <span
-                                  aria-hidden="true"
-                                  className={cn(
-                                    "inline-block h-4 w-4 transform rounded-full bg-background shadow-sm transition-transform",
-                                    enabled ? "translate-x-5" : "translate-x-1",
-                                  )}
-                                />
-                              </button>
-                            </div>
-                          );
-                        },
-                      )}
-                    </div>
-                    {mcpStatus(selectedMcpServer) === "archived" ? (
-                      <p className="text-xs text-muted-foreground">
-                        Restore this MCP server to change per-agent toggles.
-                      </p>
-                    ) : null}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Args
-                    </h3>
-                    {selectedMcpServer.args.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No args.</p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {selectedMcpServer.args.map((arg) => (
-                          <li
-                            key={arg}
-                            className="rounded-md bg-muted/20 p-2 font-mono"
-                          >
-                            {arg}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Targets
-                    </h3>
-                    {selectedMcpServer.targets.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No managed targets.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {selectedMcpServer.targets.map((path) => (
-                          <li
-                            key={path}
-                            className="rounded-md bg-muted/20 p-2 font-mono"
-                          >
-                            {path}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Warnings
-                    </h3>
-                    {selectedMcpWarnings.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No warnings.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {selectedMcpWarnings.map((warning) => (
-                          <li
-                            key={warning}
-                            className="rounded-md bg-muted/20 p-2"
-                          >
-                            {warning}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                </CardContent>
-              </>
+              <McpDetailsPanel
+                server={selectedMcpServer}
+                warnings={selectedMcpWarnings}
+                busy={busy}
+                actionsMenuOpen={actionsMenuTarget === "mcp"}
+                onToggleActionsMenu={() => {
+                  setActionsMenuTarget((prev) =>
+                    prev === "mcp" ? null : "mcp",
+                  );
+                  setOpenTargetMenu(null);
+                }}
+                onSetEnabled={(agent, enabled) =>
+                  void handleSetMcpEnabled(selectedMcpServer, agent, enabled)
+                }
+                onArchive={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation({
+                    action: "archive",
+                    target: mcpTarget(selectedMcpServer),
+                    confirmed: true,
+                  });
+                }}
+                onMakeGlobal={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation({
+                    action: "make_global",
+                    target: mcpTarget(selectedMcpServer),
+                    confirmed: true,
+                  });
+                }}
+                onRestore={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation({
+                    action: "restore",
+                    target: mcpTarget(selectedMcpServer),
+                    confirmed: true,
+                  });
+                }}
+                onRequestDelete={() => {
+                  setActionsMenuTarget(null);
+                  setDeleteDialog({
+                    request: {
+                      action: "delete",
+                      target: mcpTarget(selectedMcpServer),
+                      confirmed: true,
+                    },
+                    label: mcpDeleteLabel(selectedMcpServer),
+                  });
+                }}
+              />
             ) : null}
 
             {showAgents ? (
-              <>
-                <CardHeader className="border-b border-border/60 pb-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-lg leading-tight">
-                        {showAgents.scope === "global"
-                          ? "Global AGENTS.md"
-                          : "Project AGENTS.md"}
-                      </CardTitle>
-                      <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {showAgents.root_path}
-                      </p>
-                    </div>
-                    <Badge
-                      variant={
-                        showAgents.severity === "critical"
-                          ? "error"
-                          : showAgents.severity === "warning"
-                            ? "warning"
-                            : "success"
-                      }
-                    >
-                      {showAgents.severity}
-                    </Badge>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-                  <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-                    <div>
-                      <dt className="text-muted-foreground">Scope</dt>
-                      <dd className="mt-0.5">{showAgents.scope}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Workspace</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {showAgents.workspace ?? "-"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Root path</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {showAgents.root_path}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Exists</dt>
-                      <dd className="mt-0.5">
-                        {showAgents.exists ? "yes" : "no"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Raw</dt>
-                      <dd className="mt-0.5">
-                        {showAgents.raw_chars} chars · {showAgents.raw_lines}{" "}
-                        lines
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Rendered</dt>
-                      <dd className="mt-0.5">
-                        {showAgents.rendered_chars} chars ·{" "}
-                        {showAgents.rendered_lines} lines ·{" "}
-                        {showAgents.tokens_estimate} est tokens
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Include stats
-                    </h3>
-                    <ul className="space-y-1 text-xs text-muted-foreground">
-                      <li>{`Includes: ${showAgents.include_count}`}</li>
-                      <li>{`Missing includes: ${showAgents.missing_includes.length}`}</li>
-                      <li>{`Cycles detected: ${showAgents.cycles_detected.length}`}</li>
-                      <li>{`Depth cap reached: ${showAgents.max_depth_reached ? "yes" : "no"}`}</li>
-                    </ul>
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Top segments
-                    </h3>
-                    {selectedAgentTopSegments.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No rendered segments.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {selectedAgentTopSegments.map((segment) => (
-                          <li
-                            key={`${segment.path}:${segment.depth}`}
-                            className="rounded-md bg-muted/20 p-2"
-                          >
-                            <p className="truncate font-mono">{segment.path}</p>
-                            <p className="mt-0.5 text-[11px] text-muted-foreground">
-                              {segment.tokens_estimate} est tokens ·{" "}
-                              {segment.chars} chars · depth {segment.depth}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Diagnostics
-                    </h3>
-                    {showAgents.diagnostics.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No diagnostics.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {showAgents.diagnostics.map((item) => (
-                          <li
-                            key={item}
-                            className="rounded-md bg-muted/20 p-2 font-mono"
-                          >
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                </CardContent>
-              </>
+              <AgentsDetailsPanel
+                entry={selectedAgentEntry}
+                topSegments={selectedAgentTopSegments}
+              />
             ) : null}
 
             {showSubagent ? (
-              <>
-                <CardHeader className="border-b border-border/60 pb-3">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-lg leading-tight">
-                        {subagentDetails.subagent.name}
-                      </CardTitle>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {subagentDetails.subagent.subagent_key}
-                      </p>
-                    </div>
-                    <div className="relative flex items-center gap-1.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        aria-expanded={openTargetMenu === "subagent"}
-                        onClick={() => {
-                          setOpenTargetMenu((prev) =>
-                            prev === "subagent" ? null : "subagent",
-                          );
-                          setActionsMenuTarget(null);
-                        }}
-                      >
-                        Open…
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="More actions"
-                        disabled={busy}
-                        aria-expanded={actionsMenuTarget === "subagent"}
-                        onClick={() => {
-                          setActionsMenuTarget((prev) =>
-                            prev === "subagent" ? null : "subagent",
-                          );
-                          setOpenTargetMenu(null);
-                        }}
-                      >
-                        ⋯
-                      </Button>
-
-                      {openTargetMenu === "subagent" ? (
-                        <div
-                          role="menu"
-                          className="absolute right-14 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
-                            onClick={() =>
-                              void handleOpenSubagentPath(
-                                subagentDetails.subagent.id,
-                                "folder",
-                              )
-                            }
-                          >
-                            Open folder
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={!subagentDetails.main_file_exists}
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
-                            onClick={() =>
-                              void handleOpenSubagentPath(
-                                subagentDetails.subagent.id,
-                                "file",
-                              )
-                            }
-                          >
-                            Open file
-                          </button>
-                        </div>
-                      ) : null}
-
-                      {actionsMenuTarget === "subagent" ? (
-                        <div
-                          role="menu"
-                          className="absolute right-0 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
-                        >
-                          {subagentStatus(subagentDetails.subagent) ===
-                          "active" ? (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              disabled={busy}
-                              className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => {
-                                setActionsMenuTarget(null);
-                                void executeCatalogMutation({
-                                  action: "archive",
-                                  target: {
-                                    kind: "subagent",
-                                    subagentId: subagentDetails.subagent.id,
-                                  },
-                                  confirmed: true,
-                                });
-                              }}
-                            >
-                              Archive
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              disabled={busy}
-                              className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => {
-                                setActionsMenuTarget(null);
-                                void executeCatalogMutation({
-                                  action: "restore",
-                                  target: {
-                                    kind: "subagent",
-                                    subagentId: subagentDetails.subagent.id,
-                                  },
-                                  confirmed: true,
-                                });
-                              }}
-                            >
-                              Restore
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            disabled={busy}
-                            className="block w-full rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                            onClick={() => {
-                              setActionsMenuTarget(null);
-                              setDeleteDialog({
-                                request: {
-                                  action: "delete",
-                                  target: {
-                                    kind: "subagent",
-                                    subagentId: subagentDetails.subagent.id,
-                                  },
-                                  confirmed: true,
-                                },
-                                label: `subagent "${subagentDetails.subagent.name}"`,
-                              });
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-                  <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-                    <div>
-                      <dt className="text-muted-foreground">Status</dt>
-                      <dd className="mt-0.5 capitalize">
-                        {subagentStatus(subagentDetails.subagent)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Workspace</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {subagentDetails.subagent.workspace ?? "-"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Updated</dt>
-                      <dd className="mt-0.5">
-                        {formatUnixTime(
-                          subagentDetails.last_modified_unix_seconds,
-                        )}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Main file</dt>
-                      <dd className="mt-0.5 break-all font-mono">
-                        {compactPath(subagentDetails.main_file_path)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Canonical path</dt>
-                      <dd
-                        className="mt-0.5 break-all font-mono"
-                        title={subagentDetails.subagent.canonical_source_path}
-                      >
-                        {compactPath(
-                          subagentDetails.subagent.canonical_source_path,
-                        )}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Targets
-                    </h3>
-                    {subagentDetails.subagent.target_paths.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No target paths.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1 text-xs">
-                        {subagentDetails.subagent.target_paths.map((path) => (
-                          <li
-                            key={path}
-                            className="rounded-md bg-muted/20 p-2 font-mono"
-                          >
-                            {path}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-
-                  <section className="space-y-1.5 border-t border-border/50 pt-3">
-                    <h3 className="text-xs font-semibold text-muted-foreground">
-                      Subagent prompt preview
-                    </h3>
-                    {subagentDetails.main_file_body_preview ? (
-                      <pre className="max-h-64 overflow-auto rounded-md bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
-                        {subagentDetails.main_file_body_preview}
-                      </pre>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        No readable preview available.
-                      </p>
-                    )}
-                  </section>
-                </CardContent>
-              </>
+              <SubagentDetailsPanel
+                subagentDetails={subagentDetails}
+                busy={busy}
+                openTargetMenu={openTargetMenu === "subagent"}
+                actionsMenuOpen={actionsMenuTarget === "subagent"}
+                onToggleOpenTargetMenu={() => {
+                  setOpenTargetMenu((prev) =>
+                    prev === "subagent" ? null : "subagent",
+                  );
+                  setActionsMenuTarget(null);
+                }}
+                onToggleActionsMenu={() => {
+                  setActionsMenuTarget((prev) =>
+                    prev === "subagent" ? null : "subagent",
+                  );
+                  setOpenTargetMenu(null);
+                }}
+                onOpenPath={(target) =>
+                  void handleOpenSubagentPath(
+                    subagentDetails.subagent.id,
+                    target,
+                  )
+                }
+                onArchive={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation({
+                    action: "archive",
+                    target: {
+                      kind: "subagent",
+                      subagentId: subagentDetails.subagent.id,
+                    },
+                    confirmed: true,
+                  });
+                }}
+                onRestore={() => {
+                  setActionsMenuTarget(null);
+                  void executeCatalogMutation({
+                    action: "restore",
+                    target: {
+                      kind: "subagent",
+                      subagentId: subagentDetails.subagent.id,
+                    },
+                    confirmed: true,
+                  });
+                }}
+                onRequestDelete={() => {
+                  setActionsMenuTarget(null);
+                  setDeleteDialog({
+                    request: {
+                      action: "delete",
+                      target: {
+                        kind: "subagent",
+                        subagentId: subagentDetails.subagent.id,
+                      },
+                      confirmed: true,
+                    },
+                    label: `subagent "${subagentDetails.subagent.name}"`,
+                  });
+                }}
+              />
             ) : null}
           </Card>
         </main>
       </div>
 
       {auditOpen ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Audit log"
-            className="flex h-[80vh] w-full max-w-4xl flex-col rounded-md border border-border/70 bg-card p-4"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Audit log</h2>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => handleCloseAuditLog()}
-              >
-                Close
-              </Button>
-            </div>
-            <div className="mt-3 flex flex-wrap items-end gap-2">
-              <label
-                className="text-xs text-muted-foreground"
-                htmlFor="audit-status-filter"
-              >
-                Status
-                <select
-                  id="audit-status-filter"
-                  aria-label="Audit status filter"
-                  className="mt-1 block rounded-md border border-border/70 bg-background px-2 py-1 text-xs"
-                  value={auditStatusFilter}
-                  onChange={(event) =>
-                    setAuditStatusFilter(
-                      parseAuditStatusFilter(event.currentTarget.value),
-                    )
-                  }
-                >
-                  <option value="all">all</option>
-                  <option value="success">success</option>
-                  <option value="failed">failed</option>
-                  <option value="blocked">blocked</option>
-                </select>
-              </label>
-              <label
-                className="text-xs text-muted-foreground"
-                htmlFor="audit-action-filter"
-              >
-                Action
-                <Input
-                  id="audit-action-filter"
-                  aria-label="Audit action filter"
-                  value={auditActionFilter}
-                  placeholder="run_sync"
-                  onChange={(event) =>
-                    setAuditActionFilter(event.currentTarget.value)
-                  }
-                  className="mt-1 min-w-[220px]"
-                />
-              </label>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={auditBusy}
-                onClick={() => void loadAudit()}
-              >
-                Apply
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={auditBusy || clearAuditBusy}
-                onClick={() => setClearAuditDialogOpen(true)}
-              >
-                Clear logs
-              </Button>
-            </div>
-            <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-border/50">
-              {auditEvents.length === 0 ? (
-                <p className="p-3 text-xs text-muted-foreground">
-                  No audit events.
-                </p>
-              ) : (
-                <ul className="space-y-1 p-2">
-                  {auditEvents.map((event) => (
-                    <li
-                      key={event.id}
-                      className="rounded-md border border-border/40 bg-muted/20 p-2"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono text-[11px]">
-                          {formatIsoTime(event.occurred_at)}
-                        </span>
-                        <Badge
-                          variant={
-                            event.status === "success"
-                              ? "success"
-                              : event.status === "blocked"
-                                ? "warning"
-                                : "error"
-                          }
-                        >
-                          {event.status}
-                        </Badge>
-                      </div>
-                      <p className="mt-1 text-xs font-medium">
-                        {event.action}
-                        {event.trigger ? ` (${event.trigger})` : ""}
-                      </p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        {event.summary}
-                      </p>
-                      {event.paths.length > 0 ? (
-                        <p className="mt-1 truncate font-mono text-[11px]">
-                          {event.paths.join(" · ")}
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {clearAuditDialogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Clear audit logs"
-            className="w-full max-w-sm rounded-md border border-border/70 bg-card p-4"
-          >
-            <h2 className="text-sm font-semibold">Clear audit logs</h2>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Remove all audit events from the log?
-            </p>
-            <div className="mt-3 flex items-center justify-end gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={clearAuditBusy}
-                onClick={() => setClearAuditDialogOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={clearAuditBusy}
-                onClick={() => void handleConfirmClearAuditLogs()}
-              >
-                Confirm
-              </Button>
-            </div>
-          </div>
-        </div>
+        <AuditLogDialog
+          onClose={() => setAuditOpen(false)}
+          onError={setError}
+        />
       ) : null}
 
       {deleteDialog ? (

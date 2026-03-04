@@ -7,6 +7,7 @@ import {
   type SetStateAction,
 } from "react";
 import {
+  getAgentsContextReport,
   getRuntimeControls,
   getState,
   listSubagents,
@@ -15,6 +16,8 @@ import {
 } from "../tauriApi";
 import { pickSelectedSkillKey } from "../skillUtils";
 import type {
+  AgentsContextReport,
+  AgentContextEntry,
   RuntimeControls,
   SubagentRecord,
   SyncState,
@@ -32,22 +35,30 @@ type UseSyncStateResult = {
   state: SyncState | null;
   runtimeControls: RuntimeControls | null;
   subagents: SubagentRecord[];
+  agentsReport: AgentsContextReport | null;
   selectedSkillKey: string | null;
   selectedSubagentId: string | null;
   selectedMcpKey: string | null;
+  selectedAgentEntryId: string | null;
   busy: boolean;
   error: string | null;
   setError: Dispatch<SetStateAction<string | null>>;
   setSelectedSkillKey: Dispatch<SetStateAction<string | null>>;
   setSelectedSubagentId: Dispatch<SetStateAction<string | null>>;
   setSelectedMcpKey: Dispatch<SetStateAction<string | null>>;
+  setSelectedAgentEntryId: Dispatch<SetStateAction<string | null>>;
   setRuntimeControls: Dispatch<SetStateAction<RuntimeControls | null>>;
+  setBusy: Dispatch<SetStateAction<boolean>>;
   loadRuntimeControls: () => Promise<RuntimeControls | null>;
   refreshState: (options?: RefreshOptions) => Promise<SyncState | null>;
   applyState: (next: SyncState, preferredSkillKey?: string | null) => void;
+  applySubagents: (
+    nextSubagents: SubagentRecord[],
+    preferredSubagentId?: string | null,
+  ) => void;
 };
 
-function mcpSelectionKey(server: McpServerRecord): string {
+export function mcpSelectionKey(server: McpServerRecord): string {
   return `${server.scope}::${server.workspace ?? "global"}::${server.server_key}`;
 }
 
@@ -71,16 +82,36 @@ function pickSubagentId(
   return subagents[0]?.id ?? null;
 }
 
+function pickAgentEntryId(
+  entries: AgentContextEntry[],
+  preferredId: string | null | undefined,
+  previousId: string | null,
+): string | null {
+  if (preferredId && entries.some((item) => item.id === preferredId)) {
+    return preferredId;
+  }
+  if (previousId && entries.some((item) => item.id === previousId)) {
+    return previousId;
+  }
+  return entries[0]?.id ?? null;
+}
+
 export function useSyncState(): UseSyncStateResult {
   const [state, setState] = useState<SyncState | null>(null);
   const [runtimeControls, setRuntimeControls] =
     useState<RuntimeControls | null>(null);
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
+  const [agentsReport, setAgentsReport] = useState<AgentsContextReport | null>(
+    null,
+  );
   const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null);
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | null>(
     null,
   );
   const [selectedMcpKey, setSelectedMcpKey] = useState<string | null>(null);
+  const [selectedAgentEntryId, setSelectedAgentEntryId] = useState<
+    string | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshTokenRef = useRef(0);
@@ -117,6 +148,18 @@ export function useSyncState(): UseSyncStateResult {
     [],
   );
 
+  const applyAgentsReport = useCallback(
+    (nextReport: AgentsContextReport | null, preferredId?: string | null) => {
+      setAgentsReport(nextReport);
+      if (nextReport) {
+        setSelectedAgentEntryId((prev) =>
+          pickAgentEntryId(nextReport.entries, preferredId, prev),
+        );
+      }
+    },
+    [],
+  );
+
   const loadRuntimeControls = useCallback(async () => {
     try {
       const next = await getRuntimeControls();
@@ -145,14 +188,21 @@ export function useSyncState(): UseSyncStateResult {
       try {
         let nextState: SyncState;
         let nextSubagents: SubagentRecord[];
+        let nextAgentsReport: AgentsContextReport | null;
 
         if (syncFirst) {
           nextState = await runSync();
-          nextSubagents = await listSubagents("all");
+          const [subagentsResult, reportResult] = await Promise.all([
+            listSubagents("all"),
+            getAgentsContextReport(),
+          ]);
+          nextSubagents = subagentsResult;
+          nextAgentsReport = reportResult;
         } else {
           const snapshot = await loadDashboardSnapshot();
           nextState = snapshot.state;
           nextSubagents = snapshot.subagents;
+          nextAgentsReport = snapshot.agentsReport;
         }
 
         if (requestId !== refreshTokenRef.current) {
@@ -160,6 +210,7 @@ export function useSyncState(): UseSyncStateResult {
         }
 
         applySubagents(nextSubagents, preferredSubagentId);
+        applyAgentsReport(nextAgentsReport);
         applyState(nextState, preferredSkillKey);
         return nextState;
       } catch (invokeError) {
@@ -169,18 +220,30 @@ export function useSyncState(): UseSyncStateResult {
         setError(String(invokeError));
 
         try {
-          const [fallbackState, fallbackSubagents] = await Promise.all([
-            getState(),
-            listSubagents("all"),
-          ]);
+          const [fallbackState, fallbackSubagents, fallbackReport] =
+            await Promise.allSettled([
+              getState(),
+              listSubagents("all"),
+              getAgentsContextReport(),
+            ]);
 
           if (requestId !== refreshTokenRef.current) {
             return null;
           }
 
-          applySubagents(fallbackSubagents, preferredSubagentId);
-          applyState(fallbackState, preferredSkillKey);
-          return fallbackState;
+          if (fallbackState.status === "rejected") {
+            throw fallbackState.reason;
+          }
+          if (fallbackSubagents.status === "rejected") {
+            throw fallbackSubagents.reason;
+          }
+
+          applySubagents(fallbackSubagents.value, preferredSubagentId);
+          applyAgentsReport(
+            fallbackReport.status === "fulfilled" ? fallbackReport.value : null,
+          );
+          applyState(fallbackState.value, preferredSkillKey);
+          return fallbackState.value;
         } catch (fallbackError) {
           if (requestId !== refreshTokenRef.current) {
             return null;
@@ -202,7 +265,7 @@ export function useSyncState(): UseSyncStateResult {
         }
       }
     },
-    [applyState, applySubagents],
+    [applyAgentsReport, applyState, applySubagents],
   );
 
   useEffect(() => {
@@ -216,18 +279,23 @@ export function useSyncState(): UseSyncStateResult {
     state,
     runtimeControls,
     subagents,
+    agentsReport,
     selectedSkillKey,
     selectedSubagentId,
     selectedMcpKey,
+    selectedAgentEntryId,
     busy,
     error,
     setError,
     setSelectedSkillKey,
     setSelectedSubagentId,
     setSelectedMcpKey,
+    setSelectedAgentEntryId,
     setRuntimeControls,
+    setBusy,
     loadRuntimeControls,
     refreshState,
     applyState,
+    applySubagents,
   };
 }

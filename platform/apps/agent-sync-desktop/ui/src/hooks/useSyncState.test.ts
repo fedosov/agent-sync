@@ -7,6 +7,7 @@ import type { DashboardSnapshot } from "../types";
 vi.mock("../tauriApi", () => ({
   getRuntimeControls: vi.fn(),
   loadDashboardSnapshot: vi.fn(),
+  getAgentsContextReport: vi.fn(),
   runSync: vi.fn(),
   getState: vi.fn(),
   listSubagents: vi.fn(),
@@ -48,6 +49,7 @@ function snapshot(version: string): DashboardSnapshot {
     },
     starredSkillIds: [],
     subagents: [],
+    agentsReport: null,
   };
 }
 

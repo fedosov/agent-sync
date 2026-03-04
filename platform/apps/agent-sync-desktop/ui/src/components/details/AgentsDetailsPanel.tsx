@@ -1,0 +1,134 @@
+import { Badge } from "../ui/badge";
+import { CardContent, CardHeader, CardTitle } from "../ui/card";
+import type { AgentContextEntry, AgentContextSegment } from "../../types";
+
+type AgentsDetailsPanelProps = {
+  entry: AgentContextEntry;
+  topSegments: AgentContextSegment[];
+};
+
+export function AgentsDetailsPanel({
+  entry,
+  topSegments,
+}: AgentsDetailsPanelProps) {
+  return (
+    <>
+      <CardHeader className="border-b border-border/60 pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-lg leading-tight">
+              {entry.scope === "global"
+                ? "Global AGENTS.md"
+                : "Project AGENTS.md"}
+            </CardTitle>
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              {entry.root_path}
+            </p>
+          </div>
+          <Badge
+            variant={
+              entry.severity === "critical"
+                ? "error"
+                : entry.severity === "warning"
+                  ? "warning"
+                  : "success"
+            }
+          >
+            {entry.severity}
+          </Badge>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+        <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+          <div>
+            <dt className="text-muted-foreground">Scope</dt>
+            <dd className="mt-0.5">{entry.scope}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Workspace</dt>
+            <dd className="mt-0.5 break-all font-mono">
+              {entry.workspace ?? "-"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Root path</dt>
+            <dd className="mt-0.5 break-all font-mono">{entry.root_path}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Exists</dt>
+            <dd className="mt-0.5">{entry.exists ? "yes" : "no"}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Raw</dt>
+            <dd className="mt-0.5">
+              {entry.raw_chars} chars · {entry.raw_lines} lines
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Rendered</dt>
+            <dd className="mt-0.5">
+              {entry.rendered_chars} chars · {entry.rendered_lines} lines ·{" "}
+              {entry.tokens_estimate} est tokens
+            </dd>
+          </div>
+        </dl>
+
+        <section className="space-y-1.5 border-t border-border/50 pt-3">
+          <h3 className="text-xs font-semibold text-muted-foreground">
+            Include stats
+          </h3>
+          <ul className="space-y-1 text-xs text-muted-foreground">
+            <li>{`Includes: ${entry.include_count}`}</li>
+            <li>{`Missing includes: ${entry.missing_includes.length}`}</li>
+            <li>{`Cycles detected: ${entry.cycles_detected.length}`}</li>
+            <li>{`Depth cap reached: ${entry.max_depth_reached ? "yes" : "no"}`}</li>
+          </ul>
+        </section>
+
+        <section className="space-y-1.5 border-t border-border/50 pt-3">
+          <h3 className="text-xs font-semibold text-muted-foreground">
+            Top segments
+          </h3>
+          {topSegments.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No rendered segments.
+            </p>
+          ) : (
+            <ul className="space-y-1 text-xs">
+              {topSegments.map((segment) => (
+                <li
+                  key={`${segment.path}:${segment.depth}`}
+                  className="rounded-md bg-muted/20 p-2"
+                >
+                  <p className="truncate font-mono">{segment.path}</p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {segment.tokens_estimate} est tokens · {segment.chars} chars
+                    · depth {segment.depth}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="space-y-1.5 border-t border-border/50 pt-3">
+          <h3 className="text-xs font-semibold text-muted-foreground">
+            Diagnostics
+          </h3>
+          {entry.diagnostics.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No diagnostics.</p>
+          ) : (
+            <ul className="space-y-1 text-xs">
+              {entry.diagnostics.map((item) => (
+                <li key={item} className="rounded-md bg-muted/20 p-2 font-mono">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </CardContent>
+    </>
+  );
+}

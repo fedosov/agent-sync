@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
+
 use agent_sync_core::{
-    watch::SyncWatchStream, AgentsContextReport, AuditEvent, AuditEventStatus,
-    CatalogMutationAction, CatalogMutationTarget, DotagentsScope, McpAgent, McpServerRecord,
-    ScopeFilter, SkillLifecycleStatus, SkillLocator, SkillRecord, SubagentRecord, SyncEngine,
+    watch::SyncWatchStream, AuditEventStatus, CatalogMutationAction, CatalogMutationTarget,
+    DotagentsScope, SkillLifecycleStatus, SkillLocator, SkillRecord, SubagentRecord, SyncEngine,
     SyncState, SyncTrigger,
 };
+use commands::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
@@ -13,17 +15,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tauri::Manager;
 
-const MAX_MAIN_FILE_PREVIEW_CHARS: usize = 50_000;
-const MAX_TREE_ENTRIES: usize = 500;
+pub(crate) const MAX_MAIN_FILE_PREVIEW_CHARS: usize = 50_000;
+pub(crate) const MAX_TREE_ENTRIES: usize = 500;
 const AUTO_WATCH_DEBOUNCE_MS: u64 = 800;
 
 #[derive(Debug, Clone, Serialize)]
-struct RuntimeControls {
-    allow_filesystem_changes: bool,
-    auto_watch_active: bool,
+pub(crate) struct RuntimeControls {
+    pub(crate) allow_filesystem_changes: bool,
+    pub(crate) auto_watch_active: bool,
 }
 
 #[derive(Debug, Default)]
@@ -34,9 +36,9 @@ struct WatchRuntime {
 }
 
 #[derive(Debug, Clone)]
-struct RuntimeState {
-    watch: Arc<Mutex<WatchRuntime>>,
-    sync_lock: Arc<Mutex<()>>,
+pub(crate) struct RuntimeState {
+    pub(crate) watch: Arc<Mutex<WatchRuntime>>,
+    pub(crate) sync_lock: Arc<Mutex<()>>,
 }
 
 impl Default for RuntimeState {
@@ -49,39 +51,39 @@ impl Default for RuntimeState {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct PlatformContext {
-    os: String,
-    linux_desktop: Option<String>,
+pub(crate) struct PlatformContext {
+    pub(crate) os: String,
+    pub(crate) linux_desktop: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SkillDetails {
-    skill: SkillRecord,
-    main_file_path: String,
-    main_file_exists: bool,
-    main_file_body_preview: Option<String>,
-    main_file_body_preview_truncated: bool,
-    skill_dir_tree_preview: Option<String>,
-    skill_dir_tree_preview_truncated: bool,
-    last_modified_unix_seconds: Option<u64>,
+pub(crate) struct SkillDetails {
+    pub(crate) skill: SkillRecord,
+    pub(crate) main_file_path: String,
+    pub(crate) main_file_exists: bool,
+    pub(crate) main_file_body_preview: Option<String>,
+    pub(crate) main_file_body_preview_truncated: bool,
+    pub(crate) skill_dir_tree_preview: Option<String>,
+    pub(crate) skill_dir_tree_preview_truncated: bool,
+    pub(crate) last_modified_unix_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SubagentDetails {
-    subagent: SubagentRecord,
-    main_file_path: String,
-    main_file_exists: bool,
-    main_file_body_preview: Option<String>,
-    main_file_body_preview_truncated: bool,
-    subagent_dir_tree_preview: Option<String>,
-    subagent_dir_tree_preview_truncated: bool,
-    last_modified_unix_seconds: Option<u64>,
-    target_statuses: Vec<SubagentTargetStatus>,
+pub(crate) struct SubagentDetails {
+    pub(crate) subagent: SubagentRecord,
+    pub(crate) main_file_path: String,
+    pub(crate) main_file_exists: bool,
+    pub(crate) main_file_body_preview: Option<String>,
+    pub(crate) main_file_body_preview_truncated: bool,
+    pub(crate) subagent_dir_tree_preview: Option<String>,
+    pub(crate) subagent_dir_tree_preview_truncated: bool,
+    pub(crate) last_modified_unix_seconds: Option<u64>,
+    pub(crate) target_statuses: Vec<SubagentTargetStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum SubagentTargetKind {
+pub(crate) enum SubagentTargetKind {
     Symlink,
     RegularFile,
     Missing,
@@ -89,7 +91,7 @@ enum SubagentTargetKind {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct SubagentTargetStatus {
+pub(crate) struct SubagentTargetStatus {
     path: String,
     exists: bool,
     is_symlink: bool,
@@ -100,7 +102,7 @@ struct SubagentTargetStatus {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum CatalogMutationActionPayload {
+pub(crate) enum CatalogMutationActionPayload {
     Archive,
     Restore,
     Delete,
@@ -109,7 +111,7 @@ enum CatalogMutationActionPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind")]
-enum CatalogMutationTargetPayload {
+pub(crate) enum CatalogMutationTargetPayload {
     #[serde(rename = "skill")]
     Skill {
         #[serde(rename = "skillKey")]
@@ -131,24 +133,24 @@ enum CatalogMutationTargetPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CatalogMutationRequestPayload {
-    action: CatalogMutationActionPayload,
-    target: CatalogMutationTargetPayload,
-    confirmed: bool,
+pub(crate) struct CatalogMutationRequestPayload {
+    pub(crate) action: CatalogMutationActionPayload,
+    pub(crate) target: CatalogMutationTargetPayload,
+    pub(crate) confirmed: bool,
 }
 
-fn blocked_write_message(action: &str) -> String {
+pub(crate) fn blocked_write_message(action: &str) -> String {
     format!("Filesystem changes are disabled. Enable 'Allow filesystem changes' to run {action}.")
 }
 
-fn ensure_write_allowed(engine: &SyncEngine, action: &str) -> Result<(), String> {
+pub(crate) fn ensure_write_allowed(engine: &SyncEngine, action: &str) -> Result<(), String> {
     if engine.allow_filesystem_changes() {
         return Ok(());
     }
     Err(blocked_write_message(action))
 }
 
-fn parse_audit_status(value: Option<&str>) -> Result<Option<AuditEventStatus>, String> {
+pub(crate) fn parse_audit_status(value: Option<&str>) -> Result<Option<AuditEventStatus>, String> {
     let Some(raw) = value else {
         return Ok(None);
     };
@@ -162,20 +164,22 @@ fn parse_audit_status(value: Option<&str>) -> Result<Option<AuditEventStatus>, S
     }
 }
 
-fn parse_dotagents_scope(value: Option<&str>) -> Result<DotagentsScope, String> {
+pub(crate) fn parse_dotagents_scope(value: Option<&str>) -> Result<DotagentsScope, String> {
     let normalized = value.unwrap_or("all");
     normalized
         .parse::<DotagentsScope>()
         .map_err(|_| format!("unsupported scope: {normalized} (all|user|project)"))
 }
 
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().to_string())
         .filter(|item| !item.is_empty())
 }
 
-fn to_catalog_mutation_action(value: CatalogMutationActionPayload) -> CatalogMutationAction {
+pub(crate) fn to_catalog_mutation_action(
+    value: CatalogMutationActionPayload,
+) -> CatalogMutationAction {
     match value {
         CatalogMutationActionPayload::Archive => CatalogMutationAction::Archive,
         CatalogMutationActionPayload::Restore => CatalogMutationAction::Restore,
@@ -184,7 +188,9 @@ fn to_catalog_mutation_action(value: CatalogMutationActionPayload) -> CatalogMut
     }
 }
 
-fn validate_catalog_mutation_target(target: &CatalogMutationTargetPayload) -> Result<(), String> {
+pub(crate) fn validate_catalog_mutation_target(
+    target: &CatalogMutationTargetPayload,
+) -> Result<(), String> {
     match target {
         CatalogMutationTargetPayload::Skill { skill_key } => {
             if skill_key.trim().is_empty() {
@@ -229,7 +235,7 @@ fn validate_catalog_mutation_target(target: &CatalogMutationTargetPayload) -> Re
     }
 }
 
-fn to_catalog_mutation_target(
+pub(crate) fn to_catalog_mutation_target(
     value: CatalogMutationTargetPayload,
 ) -> Result<CatalogMutationTarget, String> {
     validate_catalog_mutation_target(&value)?;
@@ -254,7 +260,7 @@ fn to_catalog_mutation_target(
     }
 }
 
-fn runtime_controls(engine: &SyncEngine, runtime: &RuntimeState) -> RuntimeControls {
+pub(crate) fn runtime_controls(engine: &SyncEngine, runtime: &RuntimeState) -> RuntimeControls {
     let auto_watch_active = runtime
         .watch
         .lock()
@@ -266,7 +272,7 @@ fn runtime_controls(engine: &SyncEngine, runtime: &RuntimeState) -> RuntimeContr
     }
 }
 
-fn run_sync_with_lock(
+pub(crate) fn run_sync_with_lock(
     engine: &SyncEngine,
     runtime: &RuntimeState,
     trigger: SyncTrigger,
@@ -376,7 +382,7 @@ fn start_auto_watch(runtime: &RuntimeState, engine: &SyncEngine) -> Result<(), S
     Err(String::from("failed to update watcher runtime state"))
 }
 
-fn set_allow_filesystem_changes_inner_with<F>(
+pub(crate) fn set_allow_filesystem_changes_inner_with<F>(
     allow: bool,
     runtime: &RuntimeState,
     engine: &SyncEngine,
@@ -406,7 +412,7 @@ where
     Ok(runtime_controls(engine, runtime))
 }
 
-fn set_allow_filesystem_changes_inner(
+pub(crate) fn set_allow_filesystem_changes_inner(
     allow: bool,
     runtime: &RuntimeState,
     engine: &SyncEngine,
@@ -419,340 +425,7 @@ fn set_allow_filesystem_changes_inner(
     )
 }
 
-#[tauri::command]
-fn run_sync(
-    trigger: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "run_sync")?;
-    let parsed = trigger
-        .as_deref()
-        .map(SyncTrigger::try_from)
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .unwrap_or(SyncTrigger::Manual);
-
-    run_sync_with_lock(&engine, &runtime, parsed)
-}
-
-#[tauri::command]
-fn get_runtime_controls(runtime: tauri::State<RuntimeState>) -> RuntimeControls {
-    runtime_controls(&SyncEngine::current(), &runtime)
-}
-
-#[tauri::command]
-fn set_allow_filesystem_changes(
-    allow: bool,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<RuntimeControls, String> {
-    let engine = SyncEngine::current();
-    set_allow_filesystem_changes_inner(allow, &runtime, &engine)
-}
-
-#[tauri::command]
-fn list_audit_events(
-    limit: Option<usize>,
-    status: Option<String>,
-    action: Option<String>,
-) -> Result<Vec<AuditEvent>, String> {
-    let parsed_status = parse_audit_status(status.as_deref())?;
-    let events = SyncEngine::current().list_audit_events(limit, parsed_status, action.as_deref());
-    Ok(events)
-}
-
-#[tauri::command]
-fn clear_audit_events(runtime: tauri::State<RuntimeState>) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .clear_audit_events()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_state() -> SyncState {
-    SyncEngine::current().load_state()
-}
-
-#[tauri::command]
-fn get_agents_context_report() -> AgentsContextReport {
-    SyncEngine::current().get_agents_context_report()
-}
-
-#[tauri::command]
-fn get_starred_skill_ids() -> Vec<String> {
-    SyncEngine::current().starred_skill_ids()
-}
-
-#[tauri::command]
-fn set_skill_starred(skill_id: String, starred: bool) -> Result<Vec<String>, String> {
-    let engine = SyncEngine::current();
-    let state = engine.load_state();
-    if !state.skills.iter().any(|skill| skill.id == skill_id) {
-        return Err(format!("skill id not found: {skill_id}"));
-    }
-
-    engine
-        .set_skill_starred(&skill_id, starred)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn list_skills(scope: Option<String>) -> Result<Vec<SkillRecord>, String> {
-    let engine = SyncEngine::current();
-    let scope_filter = scope
-        .as_deref()
-        .map(|value| {
-            value
-                .parse::<ScopeFilter>()
-                .map_err(|_| format!("unsupported scope: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(ScopeFilter::All);
-    Ok(engine.list_skills(scope_filter))
-}
-
-#[tauri::command]
-fn list_subagents(scope: Option<String>) -> Result<Vec<SubagentRecord>, String> {
-    let engine = SyncEngine::current();
-    let scope_filter = scope
-        .as_deref()
-        .map(|value| {
-            value
-                .parse::<ScopeFilter>()
-                .map_err(|_| format!("unsupported scope: {value}"))
-        })
-        .transpose()?
-        .unwrap_or(ScopeFilter::All);
-    Ok(engine.list_subagents(scope_filter))
-}
-
-#[tauri::command]
-fn run_dotagents_sync(
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "run_dotagents_sync")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .run_dotagents_sync(parsed_scope)
-        .map_err(|error| error.to_string())?;
-    engine
-        .run_dotagents_install_frozen(parsed_scope)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn list_dotagents_skills(scope: Option<String>) -> Result<Vec<SkillRecord>, String> {
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    SyncEngine::current()
-        .list_dotagents_skills(parsed_scope)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn list_dotagents_mcp(scope: Option<String>) -> Result<Vec<McpServerRecord>, String> {
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    SyncEngine::current()
-        .list_dotagents_mcp(parsed_scope)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_skills_install(
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_skills_install")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .run_dotagents_install_frozen(parsed_scope)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_skills_add(
-    package: String,
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_skills_add")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .run_dotagents_command(parsed_scope, &["add", package.as_str()])
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_skills_remove(
-    package: String,
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_skills_remove")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .run_dotagents_command(parsed_scope, &["remove", package.as_str()])
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_skills_update(
-    package: Option<String>,
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_skills_update")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-
-    let mut command = vec![String::from("update")];
-    if let Some(pkg) = package {
-        command.push(pkg);
-    }
-    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
-    engine
-        .run_dotagents_command(parsed_scope, &refs)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_mcp_add(
-    args: Vec<String>,
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_mcp_add")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    let mut command = vec![String::from("mcp"), String::from("add")];
-    command.extend(args);
-    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
-    engine
-        .run_dotagents_command(parsed_scope, &refs)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn dotagents_mcp_remove(
-    args: Vec<String>,
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "dotagents_mcp_remove")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    let mut command = vec![String::from("mcp"), String::from("remove")];
-    command.extend(args);
-    let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
-    engine
-        .run_dotagents_command(parsed_scope, &refs)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn migrate_dotagents(
-    scope: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "migrate_dotagents")?;
-    let parsed_scope = parse_dotagents_scope(scope.as_deref())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .migrate_to_dotagents(parsed_scope)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_mcp_servers() -> Vec<McpServerRecord> {
-    SyncEngine::current().list_mcp_servers()
-}
-
-#[tauri::command]
-fn set_mcp_server_enabled(
-    server_key: String,
-    agent: String,
-    enabled: bool,
-    scope: Option<String>,
-    workspace: Option<String>,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "set_mcp_server_enabled")?;
-    let parsed = agent
-        .parse::<McpAgent>()
-        .map_err(|error| error.to_string())?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .set_mcp_server_enabled(
-            &server_key,
-            parsed,
-            enabled,
-            scope.as_deref(),
-            workspace.as_deref(),
-        )
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn fix_sync_warning(warning: String, runtime: tauri::State<RuntimeState>) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "fix_sync_warning")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    engine
-        .fix_sync_warning(&warning)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn mutate_catalog_item_inner(
+pub(crate) fn mutate_catalog_item_inner(
     request: CatalogMutationRequestPayload,
     action_name: &str,
     runtime: &RuntimeState,
@@ -771,221 +444,7 @@ fn mutate_catalog_item_inner(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn mutate_catalog_item(
-    request: CatalogMutationRequestPayload,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    let engine = SyncEngine::current();
-    mutate_catalog_item_inner(request, "mutate_catalog_item", &runtime, &engine)
-}
-
-#[tauri::command]
-fn delete_skill(
-    skill_key: String,
-    confirmed: bool,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    mutate_catalog_item_inner(
-        CatalogMutationRequestPayload {
-            action: CatalogMutationActionPayload::Delete,
-            target: CatalogMutationTargetPayload::Skill { skill_key },
-            confirmed,
-        },
-        "delete_skill",
-        &runtime,
-        &SyncEngine::current(),
-    )
-}
-
-#[tauri::command]
-fn archive_skill(
-    skill_key: String,
-    confirmed: bool,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    mutate_catalog_item_inner(
-        CatalogMutationRequestPayload {
-            action: CatalogMutationActionPayload::Archive,
-            target: CatalogMutationTargetPayload::Skill { skill_key },
-            confirmed,
-        },
-        "archive_skill",
-        &runtime,
-        &SyncEngine::current(),
-    )
-}
-
-#[tauri::command]
-fn restore_skill(
-    skill_key: String,
-    confirmed: bool,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    mutate_catalog_item_inner(
-        CatalogMutationRequestPayload {
-            action: CatalogMutationActionPayload::Restore,
-            target: CatalogMutationTargetPayload::Skill { skill_key },
-            confirmed,
-        },
-        "restore_skill",
-        &runtime,
-        &SyncEngine::current(),
-    )
-}
-
-#[tauri::command]
-fn make_global(
-    skill_key: String,
-    confirmed: bool,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "make_global")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    let skill = find_skill(&engine, &skill_key, Some(SkillLifecycleStatus::Active))?;
-    engine
-        .make_global(&skill, confirmed)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn rename_skill(
-    skill_key: String,
-    new_title: String,
-    runtime: tauri::State<RuntimeState>,
-) -> Result<SyncState, String> {
-    let engine = SyncEngine::current();
-    ensure_write_allowed(&engine, "rename_skill")?;
-    let _guard = runtime
-        .sync_lock
-        .lock()
-        .map_err(|_| String::from("internal lock error"))?;
-    let skill = find_skill(&engine, &skill_key, Some(SkillLifecycleStatus::Active))?;
-    engine
-        .rename(&skill, &new_title)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_skill_details(skill_key: String) -> Result<SkillDetails, String> {
-    let engine = SyncEngine::current();
-    let skill = find_skill(&engine, &skill_key, None)?;
-    let main_file = resolve_main_skill_file(&skill);
-    let skill_root = resolve_skill_root_dir(&skill, &main_file);
-    let main_file_exists = main_file.exists();
-    let (main_file_body_preview, main_file_body_preview_truncated) =
-        read_preview(&main_file, MAX_MAIN_FILE_PREVIEW_CHARS);
-    let (skill_dir_tree_preview, skill_dir_tree_preview_truncated) =
-        read_skill_dir_tree(&skill_root, MAX_TREE_ENTRIES);
-    let last_modified_unix_seconds = fs::metadata(&main_file)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
-
-    Ok(SkillDetails {
-        skill,
-        main_file_path: main_file.display().to_string(),
-        main_file_exists,
-        main_file_body_preview,
-        main_file_body_preview_truncated,
-        skill_dir_tree_preview,
-        skill_dir_tree_preview_truncated,
-        last_modified_unix_seconds,
-    })
-}
-
-#[tauri::command]
-fn get_subagent_details(subagent_id: String) -> Result<SubagentDetails, String> {
-    let engine = SyncEngine::current();
-    let subagent = find_subagent(&engine, &subagent_id)?;
-    let main_file = PathBuf::from(&subagent.canonical_source_path);
-    let canonical_source = fs::canonicalize(&main_file).ok();
-    let subagent_root = main_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(&subagent.canonical_source_path));
-    let main_file_exists = main_file.exists();
-    let (main_file_body_preview, main_file_body_preview_truncated) =
-        read_preview(&main_file, MAX_MAIN_FILE_PREVIEW_CHARS);
-    let (subagent_dir_tree_preview, subagent_dir_tree_preview_truncated) =
-        read_skill_dir_tree(&subagent_root, MAX_TREE_ENTRIES);
-    let last_modified_unix_seconds = fs::metadata(&main_file)
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
-    let target_statuses = collect_subagent_target_statuses(
-        &subagent.target_paths,
-        main_file.parent(),
-        canonical_source.as_deref(),
-    );
-
-    Ok(SubagentDetails {
-        subagent,
-        main_file_path: main_file.display().to_string(),
-        main_file_exists,
-        main_file_body_preview,
-        main_file_body_preview_truncated,
-        subagent_dir_tree_preview,
-        subagent_dir_tree_preview_truncated,
-        last_modified_unix_seconds,
-        target_statuses,
-    })
-}
-
-#[tauri::command]
-fn open_skill_path(skill_key: String, target: Option<String>) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    let skill = find_skill(&engine, &skill_key, None)?;
-    let selected_target = target.unwrap_or_else(|| String::from("folder"));
-    let path = match selected_target.as_str() {
-        "folder" => PathBuf::from(&skill.canonical_source_path),
-        "file" => resolve_main_skill_file(&skill),
-        other => {
-            return Err(format!(
-                "unsupported target: {other} (allowed: folder|file)"
-            ));
-        }
-    };
-    open_path(&path)
-}
-
-#[tauri::command]
-fn open_subagent_path(subagent_id: String, target: Option<String>) -> Result<(), String> {
-    let engine = SyncEngine::current();
-    let subagent = find_subagent(&engine, &subagent_id)?;
-    let selected_target = target.unwrap_or_else(|| String::from("folder"));
-    let path = match selected_target.as_str() {
-        "folder" => PathBuf::from(&subagent.canonical_source_path)
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(&subagent.canonical_source_path)),
-        "file" => PathBuf::from(&subagent.canonical_source_path),
-        other => {
-            return Err(format!(
-                "unsupported target: {other} (allowed: folder|file)"
-            ));
-        }
-    };
-    open_path(&path)
-}
-
-#[tauri::command]
-fn get_platform_context() -> PlatformContext {
-    let linux_desktop_raw = if normalize_os_name(std::env::consts::OS) == "linux" {
-        std::env::var("XDG_CURRENT_DESKTOP").ok()
-    } else {
-        None
-    };
-    build_platform_context(std::env::consts::OS, linux_desktop_raw.as_deref())
-}
-
-fn normalize_os_name(raw_os: &str) -> &'static str {
+pub(crate) fn normalize_os_name(raw_os: &str) -> &'static str {
     match raw_os {
         "macos" => "macos",
         "windows" => "windows",
@@ -1000,7 +459,10 @@ fn normalize_linux_desktop(raw: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn build_platform_context(raw_os: &str, linux_desktop_raw: Option<&str>) -> PlatformContext {
+pub(crate) fn build_platform_context(
+    raw_os: &str,
+    linux_desktop_raw: Option<&str>,
+) -> PlatformContext {
     let os = normalize_os_name(raw_os);
     let linux_desktop = if os == "linux" {
         normalize_linux_desktop(linux_desktop_raw)
@@ -1013,7 +475,7 @@ fn build_platform_context(raw_os: &str, linux_desktop_raw: Option<&str>) -> Plat
     }
 }
 
-fn find_skill(
+pub(crate) fn find_skill(
     engine: &SyncEngine,
     skill_key: &str,
     status: Option<SkillLifecycleStatus>,
@@ -1026,13 +488,16 @@ fn find_skill(
         .ok_or_else(|| format!("skill not found: {skill_key}"))
 }
 
-fn find_subagent(engine: &SyncEngine, subagent_id: &str) -> Result<SubagentRecord, String> {
+pub(crate) fn find_subagent(
+    engine: &SyncEngine,
+    subagent_id: &str,
+) -> Result<SubagentRecord, String> {
     engine
         .find_subagent_by_id(subagent_id)
         .ok_or_else(|| format!("subagent not found: {subagent_id}"))
 }
 
-fn resolve_main_skill_file(skill: &SkillRecord) -> PathBuf {
+pub(crate) fn resolve_main_skill_file(skill: &SkillRecord) -> PathBuf {
     let source = PathBuf::from(&skill.canonical_source_path);
     if skill.package_type == "dir" {
         source.join("SKILL.md")
@@ -1041,7 +506,7 @@ fn resolve_main_skill_file(skill: &SkillRecord) -> PathBuf {
     }
 }
 
-fn resolve_skill_root_dir(skill: &SkillRecord, main_file: &Path) -> PathBuf {
+pub(crate) fn resolve_skill_root_dir(skill: &SkillRecord, main_file: &Path) -> PathBuf {
     if skill.package_type == "dir" {
         return PathBuf::from(&skill.canonical_source_path);
     }
@@ -1051,7 +516,7 @@ fn resolve_skill_root_dir(skill: &SkillRecord, main_file: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(&skill.canonical_source_path))
 }
 
-fn read_preview(path: &Path, max_chars: usize) -> (Option<String>, bool) {
+pub(crate) fn read_preview(path: &Path, max_chars: usize) -> (Option<String>, bool) {
     let Ok(contents) = fs::read_to_string(path) else {
         return (None, false);
     };
@@ -1065,7 +530,7 @@ fn read_preview(path: &Path, max_chars: usize) -> (Option<String>, bool) {
     (Some(preview), true)
 }
 
-fn read_skill_dir_tree(root: &Path, max_entries: usize) -> (Option<String>, bool) {
+pub(crate) fn read_skill_dir_tree(root: &Path, max_entries: usize) -> (Option<String>, bool) {
     if max_entries == 0 {
         return (None, false);
     }
@@ -1099,7 +564,7 @@ fn read_skill_dir_tree(root: &Path, max_entries: usize) -> (Option<String>, bool
     (Some(lines.join("\n")), truncated)
 }
 
-fn collect_subagent_target_statuses(
+pub(crate) fn collect_subagent_target_statuses(
     target_paths: &[String],
     canonical_parent: Option<&Path>,
     canonical_source: Option<&Path>,
@@ -1110,7 +575,7 @@ fn collect_subagent_target_statuses(
         .collect()
 }
 
-fn build_subagent_target_status(
+pub(crate) fn build_subagent_target_status(
     path: &str,
     canonical_parent: Option<&Path>,
     canonical_source: Option<&Path>,
@@ -1261,7 +726,7 @@ fn render_tree_entries(
     }
 }
 
-fn open_path(path: &Path) -> Result<(), String> {
+pub(crate) fn open_path(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.display()));
     }
@@ -1523,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_write_allowed_does_not_append_blocked_audit() {
+    pub(crate) fn ensure_write_allowed_does_not_append_blocked_audit() {
         let temp = tempdir().expect("create tempdir");
         let engine = engine_in_temp(&temp);
         engine
@@ -1543,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_write_allowed_blocks_mutate_catalog_item_when_writes_disabled() {
+    pub(crate) fn ensure_write_allowed_blocks_mutate_catalog_item_when_writes_disabled() {
         let temp = tempdir().expect("create tempdir");
         let engine = engine_in_temp(&temp);
         engine
@@ -1555,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_catalog_mutation_target_checks_mcp_payload_scope() {
+    pub(crate) fn validate_catalog_mutation_target_checks_mcp_payload_scope() {
         let invalid_scope = CatalogMutationTargetPayload::Mcp {
             server_key: String::from("exa"),
             scope: String::from("invalid"),
@@ -1586,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_catalog_mutation_target_checks_skill_and_subagent_keys() {
+    pub(crate) fn validate_catalog_mutation_target_checks_skill_and_subagent_keys() {
         let empty_skill = CatalogMutationTargetPayload::Skill {
             skill_key: String::new(),
         };

@@ -18,6 +18,7 @@ vi.mock("./tauriApi", () => ({
   clearAuditEvents: vi.fn(),
   getAgentsContextReport: vi.fn(),
   getState: vi.fn(),
+  loadDashboardSnapshot: vi.fn(),
   runSync: vi.fn(),
   runDotagentsSync: vi.fn(),
   listDotagentsSkills: vi.fn(),
@@ -209,22 +210,7 @@ function setApiDefaults(
   state: SyncState,
   detailsBySkillKey: Record<string, SkillDetails>,
 ) {
-  vi.mocked(tauriApi.getState).mockResolvedValue(state);
-  vi.mocked(tauriApi.getRuntimeControls).mockResolvedValue({
-    allow_filesystem_changes: false,
-    auto_watch_active: false,
-  });
-  vi.mocked(tauriApi.setAllowFilesystemChanges).mockResolvedValue({
-    allow_filesystem_changes: true,
-    auto_watch_active: true,
-  });
-  vi.mocked(tauriApi.listAuditEvents).mockResolvedValue([]);
-  vi.mocked(tauriApi.clearAuditEvents).mockResolvedValue(undefined);
-  vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
-    buildAgentsReport(),
-  );
-  vi.mocked(tauriApi.getStarredSkillIds).mockResolvedValue([]);
-  vi.mocked(tauriApi.listSubagents).mockResolvedValue([
+  const defaultSubagents = [
     {
       id: "sub-1",
       name: "Subagent",
@@ -242,7 +228,29 @@ function setApiDefaults(
       tools: [],
       codex_tools_ignored: false,
     },
-  ]);
+  ];
+  vi.mocked(tauriApi.getState).mockResolvedValue(state);
+  vi.mocked(tauriApi.getRuntimeControls).mockResolvedValue({
+    allow_filesystem_changes: false,
+    auto_watch_active: false,
+  });
+  vi.mocked(tauriApi.setAllowFilesystemChanges).mockResolvedValue({
+    allow_filesystem_changes: true,
+    auto_watch_active: true,
+  });
+  vi.mocked(tauriApi.listAuditEvents).mockResolvedValue([]);
+  vi.mocked(tauriApi.clearAuditEvents).mockResolvedValue(undefined);
+  vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+    buildAgentsReport(),
+  );
+  vi.mocked(tauriApi.getStarredSkillIds).mockResolvedValue([]);
+  vi.mocked(tauriApi.listSubagents).mockResolvedValue(defaultSubagents);
+  vi.mocked(tauriApi.loadDashboardSnapshot).mockImplementation(async () => ({
+    state: await tauriApi.getState(),
+    starredSkillIds: await tauriApi.getStarredSkillIds().catch(() => []),
+    subagents: await tauriApi.listSubagents("all"),
+    agentsReport: await tauriApi.getAgentsContextReport().catch(() => null),
+  }));
   vi.mocked(tauriApi.getSubagentDetails).mockResolvedValue({
     subagent: {
       id: "sub-1",

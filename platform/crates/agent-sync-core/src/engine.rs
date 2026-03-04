@@ -164,12 +164,12 @@ struct SyncCoreResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ArchivedSkillManifest {
+struct ArchivedManifest {
     version: u32,
     #[serde(rename = "archived_at")]
     archived_at: String,
-    #[serde(rename = "skill_key")]
-    skill_key: String,
+    #[serde(alias = "skill_key", alias = "subagent_key")]
+    entity_key: String,
     name: String,
     #[serde(rename = "original_scope")]
     original_scope: String,
@@ -181,22 +181,17 @@ struct ArchivedSkillManifest {
     moved_links: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ArchivedSubagentManifest {
-    version: u32,
-    #[serde(rename = "archived_at")]
-    archived_at: String,
-    #[serde(rename = "subagent_key")]
-    subagent_key: String,
-    name: String,
-    #[serde(rename = "original_scope")]
-    original_scope: String,
-    #[serde(rename = "original_workspace")]
-    original_workspace: Option<String>,
-    #[serde(rename = "original_canonical_source_path")]
-    original_canonical_source_path: String,
-    #[serde(rename = "moved_links")]
-    moved_links: Vec<String>,
+struct DeleteEntityErrors {
+    blocked_protected: SyncEngineError,
+    outside_roots: SyncEngineError,
+    target_missing: SyncEngineError,
+}
+
+struct ArchiveEntityErrors {
+    blocked_protected: SyncEngineError,
+    outside_roots: SyncEngineError,
+    source_missing: SyncEngineError,
+    make_manifest_write_error: fn() -> SyncEngineError,
 }
 
 #[derive(Debug, Clone)]
@@ -857,21 +852,15 @@ impl SyncEngine {
             PathBuf::from(&skill.canonical_source_path)
         };
 
-        if self.is_protected_path(&target) {
-            return Err(SyncEngineError::DeletionBlockedProtectedPath);
-        }
-
-        let roots = self.allowed_delete_roots();
-        if !roots.iter().any(|root| self.is_relative_to(&target, root)) {
-            return Err(SyncEngineError::DeletionOutsideAllowedRoots);
-        }
-
-        if !path_exists_or_symlink(&target) {
-            return Err(SyncEngineError::DeletionTargetMissing);
-        }
-
-        self.move_to_trash(&target)?;
-        self.run_sync(SyncTrigger::Delete)
+        self.delete_entity(
+            &target,
+            &self.allowed_delete_roots(),
+            DeleteEntityErrors {
+                blocked_protected: SyncEngineError::DeletionBlockedProtectedPath,
+                outside_roots: SyncEngineError::DeletionOutsideAllowedRoots,
+                target_missing: SyncEngineError::DeletionTargetMissing,
+            },
+        )
     }
 
     pub fn archive(
@@ -886,67 +875,23 @@ impl SyncEngine {
             return Err(SyncEngineError::ArchiveOnlyForActiveSkill);
         }
 
-        let source = PathBuf::from(&skill.canonical_source_path);
-        if self.is_protected_path(&source) {
-            return Err(SyncEngineError::ArchiveBlockedProtectedPath);
-        }
-
-        let roots = self.allowed_delete_roots();
-        if !roots.iter().any(|root| self.is_relative_to(&source, root)) {
-            return Err(SyncEngineError::ArchiveOutsideAllowedRoots);
-        }
-        if !path_exists_or_symlink(&source) {
-            return Err(SyncEngineError::ArchiveSourceMissing);
-        }
-
-        let archived_at = iso8601_now();
-        let bundle = self
-            .archives_root()
-            .join(self.make_archive_bundle_name(&skill.skill_key));
-        let source_archive_path = bundle.join("source");
-        let links_archive_path = bundle.join("links");
-
-        fs::create_dir_all(&links_archive_path)
-            .map_err(|e| SyncEngineError::io(&links_archive_path, e))?;
-
-        fs::rename(&source, &source_archive_path).map_err(|e| SyncEngineError::io(&source, e))?;
-
-        let mut moved_links = Vec::new();
-        let mut used_link_names: HashSet<String> = HashSet::new();
-        for target_path in &skill.target_paths {
-            let target = PathBuf::from(target_path);
-            if standardized_path(&target) == standardized_path(&source) {
-                continue;
-            }
-            if !is_symlink(&target) {
-                continue;
-            }
-            let archived_link = self.unique_archived_link_path(
-                target
-                    .file_name()
-                    .unwrap_or_else(|| OsStr::new("link"))
-                    .to_string_lossy()
-                    .as_ref(),
-                &links_archive_path,
-                &mut used_link_names,
-            );
-            fs::rename(&target, &archived_link).map_err(|e| SyncEngineError::io(&target, e))?;
-            moved_links.push(target.display().to_string());
-        }
-
-        let manifest = ArchivedSkillManifest {
-            version: 1,
-            archived_at,
-            skill_key: skill.skill_key.clone(),
-            name: skill.name.clone(),
-            original_scope: skill.scope.clone(),
-            original_workspace: skill.workspace.clone(),
-            original_canonical_source_path: source.display().to_string(),
-            moved_links,
-        };
-
-        self.write_archived_manifest(&manifest, &bundle)?;
-        self.run_sync(SyncTrigger::Archive)
+        self.archive_entity(
+            &skill.canonical_source_path,
+            &skill.skill_key,
+            &skill.name,
+            &skill.scope,
+            &skill.workspace,
+            &skill.target_paths,
+            &self.allowed_delete_roots(),
+            &self.archives_root(),
+            "source",
+            ArchiveEntityErrors {
+                blocked_protected: SyncEngineError::ArchiveBlockedProtectedPath,
+                outside_roots: SyncEngineError::ArchiveOutsideAllowedRoots,
+                source_missing: SyncEngineError::ArchiveSourceMissing,
+                make_manifest_write_error: || SyncEngineError::ArchiveManifestWriteFailed,
+            },
+        )
     }
 
     pub fn restore(
@@ -971,8 +916,9 @@ impl SyncEngine {
             return Err(SyncEngineError::RestoreSourceMissing);
         }
 
-        let manifest = self.read_archived_manifest(&bundle)?;
-        let destination = self.preferred_global_destination(&manifest.skill_key);
+        let manifest =
+            self.read_archived_manifest(&bundle, || SyncEngineError::RestoreManifestMissing)?;
+        let destination = self.preferred_global_destination(&manifest.entity_key);
         if path_exists_or_symlink(&destination) {
             return Err(SyncEngineError::RestoreTargetExists);
         }
@@ -1005,21 +951,15 @@ impl SyncEngine {
             PathBuf::from(&subagent.canonical_source_path)
         };
 
-        if self.is_protected_path(&target) {
-            return Err(SyncEngineError::DeletionSubagentBlockedProtectedPath);
-        }
-
-        let roots = self.allowed_subagent_lifecycle_roots();
-        if !roots.iter().any(|root| self.is_relative_to(&target, root)) {
-            return Err(SyncEngineError::DeletionSubagentOutsideAllowedRoots);
-        }
-
-        if !path_exists_or_symlink(&target) {
-            return Err(SyncEngineError::DeletionSubagentTargetMissing);
-        }
-
-        self.move_to_trash(&target)?;
-        self.run_sync(SyncTrigger::Delete)
+        self.delete_entity(
+            &target,
+            &self.allowed_subagent_lifecycle_roots(),
+            DeleteEntityErrors {
+                blocked_protected: SyncEngineError::DeletionSubagentBlockedProtectedPath,
+                outside_roots: SyncEngineError::DeletionSubagentOutsideAllowedRoots,
+                target_missing: SyncEngineError::DeletionSubagentTargetMissing,
+            },
+        )
     }
 
     pub fn archive_subagent(
@@ -1034,33 +974,92 @@ impl SyncEngine {
             return Err(SyncEngineError::ArchiveOnlyForActiveSubagent);
         }
 
-        let source = PathBuf::from(&subagent.canonical_source_path);
-        if self.is_protected_path(&source) {
-            return Err(SyncEngineError::ArchiveSubagentBlockedProtectedPath);
+        self.archive_entity(
+            &subagent.canonical_source_path,
+            &subagent.subagent_key,
+            &subagent.name,
+            &subagent.scope,
+            &subagent.workspace,
+            &subagent.target_paths,
+            &self.allowed_subagent_lifecycle_roots(),
+            &self.subagent_archives_root(),
+            "source.md",
+            ArchiveEntityErrors {
+                blocked_protected: SyncEngineError::ArchiveSubagentBlockedProtectedPath,
+                outside_roots: SyncEngineError::ArchiveSubagentOutsideAllowedRoots,
+                source_missing: SyncEngineError::ArchiveSubagentSourceMissing,
+                make_manifest_write_error: || SyncEngineError::ArchiveSubagentManifestWriteFailed,
+            },
+        )
+    }
+
+    fn delete_entity(
+        &self,
+        target: &Path,
+        allowed_roots: &[PathBuf],
+        errors: DeleteEntityErrors,
+    ) -> Result<SyncState, SyncEngineError> {
+        if self.is_protected_path(target) {
+            return Err(errors.blocked_protected);
         }
 
-        let roots = self.allowed_subagent_lifecycle_roots();
-        if !roots.iter().any(|root| self.is_relative_to(&source, root)) {
-            return Err(SyncEngineError::ArchiveSubagentOutsideAllowedRoots);
+        if !allowed_roots
+            .iter()
+            .any(|root| self.is_relative_to(target, root))
+        {
+            return Err(errors.outside_roots);
+        }
+
+        if !path_exists_or_symlink(target) {
+            return Err(errors.target_missing);
+        }
+
+        self.move_to_trash(target)?;
+        self.run_sync(SyncTrigger::Delete)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn archive_entity(
+        &self,
+        canonical_source_path: &str,
+        entity_key: &str,
+        name: &str,
+        scope: &str,
+        workspace: &Option<String>,
+        target_paths: &[String],
+        allowed_roots: &[PathBuf],
+        archives_root: &Path,
+        source_archive_name: &str,
+        errors: ArchiveEntityErrors,
+    ) -> Result<SyncState, SyncEngineError> {
+        let source = PathBuf::from(canonical_source_path);
+        if self.is_protected_path(&source) {
+            return Err(errors.blocked_protected);
+        }
+
+        if !allowed_roots
+            .iter()
+            .any(|root| self.is_relative_to(&source, root))
+        {
+            return Err(errors.outside_roots);
         }
         if !path_exists_or_symlink(&source) {
-            return Err(SyncEngineError::ArchiveSubagentSourceMissing);
+            return Err(errors.source_missing);
         }
 
         let archived_at = iso8601_now();
-        let bundle = self
-            .subagent_archives_root()
-            .join(self.make_archive_bundle_name(&subagent.subagent_key));
-        let source_archive_path = bundle.join("source.md");
+        let bundle = archives_root.join(self.make_archive_bundle_name(entity_key));
+        let source_archive_path = bundle.join(source_archive_name);
         let links_archive_path = bundle.join("links");
 
         fs::create_dir_all(&links_archive_path)
             .map_err(|e| SyncEngineError::io(&links_archive_path, e))?;
+
         fs::rename(&source, &source_archive_path).map_err(|e| SyncEngineError::io(&source, e))?;
 
         let mut moved_links = Vec::new();
         let mut used_link_names: HashSet<String> = HashSet::new();
-        for target_path in &subagent.target_paths {
+        for target_path in target_paths {
             let target = PathBuf::from(target_path);
             if standardized_path(&target) == standardized_path(&source) {
                 continue;
@@ -1081,18 +1080,18 @@ impl SyncEngine {
             moved_links.push(target.display().to_string());
         }
 
-        let manifest = ArchivedSubagentManifest {
+        let manifest = ArchivedManifest {
             version: 1,
             archived_at,
-            subagent_key: subagent.subagent_key.clone(),
-            name: subagent.name.clone(),
-            original_scope: subagent.scope.clone(),
-            original_workspace: subagent.workspace.clone(),
+            entity_key: entity_key.to_string(),
+            name: name.to_string(),
+            original_scope: scope.to_string(),
+            original_workspace: workspace.clone(),
             original_canonical_source_path: source.display().to_string(),
             moved_links,
         };
 
-        self.write_archived_subagent_manifest(&manifest, &bundle)?;
+        self.write_archived_manifest(&manifest, &bundle, errors.make_manifest_write_error)?;
         self.run_sync(SyncTrigger::Archive)
     }
 
@@ -1118,7 +1117,8 @@ impl SyncEngine {
             return Err(SyncEngineError::RestoreSubagentSourceMissing);
         }
 
-        let manifest = self.read_archived_subagent_manifest(&bundle)?;
+        let manifest = self
+            .read_archived_manifest(&bundle, || SyncEngineError::RestoreSubagentManifestMissing)?;
         let destination = PathBuf::from(&manifest.original_canonical_source_path);
         if self.is_protected_path(&destination) {
             return Err(SyncEngineError::RestoreSubagentBlockedProtectedPath);
@@ -2614,178 +2614,160 @@ impl SyncEngine {
 
     fn write_archived_manifest(
         &self,
-        manifest: &ArchivedSkillManifest,
+        manifest: &ArchivedManifest,
         bundle: &Path,
+        make_write_error: fn() -> SyncEngineError,
     ) -> Result<(), SyncEngineError> {
         let path = bundle.join("manifest.json");
         let mut data = serde_json::to_vec_pretty(manifest)?;
         data.push(b'\n');
-        fs::write(&path, data).map_err(|_| SyncEngineError::ArchiveManifestWriteFailed)
+        fs::write(&path, data).map_err(|_| make_write_error())
     }
 
     fn read_archived_manifest(
         &self,
         bundle: &Path,
-    ) -> Result<ArchivedSkillManifest, SyncEngineError> {
+        make_missing_error: fn() -> SyncEngineError,
+    ) -> Result<ArchivedManifest, SyncEngineError> {
         let path = bundle.join("manifest.json");
         if !path.exists() {
-            return Err(SyncEngineError::RestoreManifestMissing);
+            return Err(make_missing_error());
         }
 
-        let data = fs::read(&path).map_err(|_| SyncEngineError::RestoreManifestMissing)?;
-        serde_json::from_slice(&data).map_err(|_| SyncEngineError::RestoreManifestMissing)
+        let data = fs::read(&path).map_err(|_| make_missing_error())?;
+        serde_json::from_slice(&data).map_err(|_| make_missing_error())
+    }
+
+    fn load_archived_bundles(
+        &self,
+        archives_root: &Path,
+        make_missing_error: fn() -> SyncEngineError,
+    ) -> Vec<(PathBuf, ArchivedManifest)> {
+        let Ok(entries) = fs::read_dir(archives_root) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            let bundle = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&bundle) else {
+                continue;
+            };
+            if !metadata.is_dir() {
+                continue;
+            }
+
+            let Ok(manifest) = self.read_archived_manifest(&bundle, make_missing_error) else {
+                continue;
+            };
+            result.push((bundle, manifest));
+        }
+
+        result
     }
 
     fn load_archived_entries(&self) -> Vec<SkillRecord> {
-        let archives_root = self.archives_root();
-        let Ok(entries) = fs::read_dir(&archives_root) else {
-            return Vec::new();
-        };
+        let bundles = self.load_archived_bundles(&self.archives_root(), || {
+            SyncEngineError::RestoreManifestMissing
+        });
 
-        let mut result = Vec::new();
-        for entry in entries.filter_map(Result::ok) {
-            let bundle = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&bundle) else {
-                continue;
-            };
-            if !metadata.is_dir() {
-                continue;
-            }
+        bundles
+            .into_iter()
+            .map(|(bundle, manifest)| {
+                let source = bundle.join("source");
+                let exists = path_exists_or_symlink(&source);
+                let scope = if manifest.original_scope.trim().is_empty() {
+                    String::from("global")
+                } else {
+                    manifest.original_scope.clone()
+                };
 
-            let Ok(manifest) = self.read_archived_manifest(&bundle) else {
-                continue;
-            };
-            let source = bundle.join("source");
-            let exists = path_exists_or_symlink(&source);
-            let scope = if manifest.original_scope.trim().is_empty() {
-                String::from("global")
-            } else {
-                manifest.original_scope.clone()
-            };
-
-            result.push(SkillRecord {
-                id: skill_entry_id(
-                    "archived",
-                    Some(bundle.to_string_lossy().as_ref()),
-                    &manifest.skill_key,
-                ),
-                name: manifest.name.clone(),
-                scope,
-                workspace: manifest.original_workspace.clone(),
-                canonical_source_path: source.display().to_string(),
-                target_paths: manifest.moved_links.clone(),
-                exists,
-                is_symlink_canonical: is_symlink(&source),
-                package_type: String::from("dir"),
-                skill_key: manifest.skill_key.clone(),
-                symlink_target: source.display().to_string(),
-                source: None,
-                commit: None,
-                install_status: None,
-                wildcard_source: None,
-                status: SkillLifecycleStatus::Archived,
-                archived_at: Some(manifest.archived_at.clone()),
-                archived_bundle_path: Some(bundle.display().to_string()),
-                archived_original_scope: Some(manifest.original_scope.clone()),
-                archived_original_workspace: manifest.original_workspace.clone(),
-            });
-        }
-
-        result
-    }
-
-    fn write_archived_subagent_manifest(
-        &self,
-        manifest: &ArchivedSubagentManifest,
-        bundle: &Path,
-    ) -> Result<(), SyncEngineError> {
-        let path = bundle.join("manifest.json");
-        let mut data = serde_json::to_vec_pretty(manifest)?;
-        data.push(b'\n');
-        fs::write(&path, data).map_err(|_| SyncEngineError::ArchiveSubagentManifestWriteFailed)
-    }
-
-    fn read_archived_subagent_manifest(
-        &self,
-        bundle: &Path,
-    ) -> Result<ArchivedSubagentManifest, SyncEngineError> {
-        let path = bundle.join("manifest.json");
-        if !path.exists() {
-            return Err(SyncEngineError::RestoreSubagentManifestMissing);
-        }
-
-        let data = fs::read(&path).map_err(|_| SyncEngineError::RestoreSubagentManifestMissing)?;
-        serde_json::from_slice(&data).map_err(|_| SyncEngineError::RestoreSubagentManifestMissing)
+                SkillRecord {
+                    id: skill_entry_id(
+                        "archived",
+                        Some(bundle.to_string_lossy().as_ref()),
+                        &manifest.entity_key,
+                    ),
+                    name: manifest.name.clone(),
+                    scope,
+                    workspace: manifest.original_workspace.clone(),
+                    canonical_source_path: source.display().to_string(),
+                    target_paths: manifest.moved_links.clone(),
+                    exists,
+                    is_symlink_canonical: is_symlink(&source),
+                    package_type: String::from("dir"),
+                    skill_key: manifest.entity_key.clone(),
+                    symlink_target: source.display().to_string(),
+                    source: None,
+                    commit: None,
+                    install_status: None,
+                    wildcard_source: None,
+                    status: SkillLifecycleStatus::Archived,
+                    archived_at: Some(manifest.archived_at.clone()),
+                    archived_bundle_path: Some(bundle.display().to_string()),
+                    archived_original_scope: Some(manifest.original_scope.clone()),
+                    archived_original_workspace: manifest.original_workspace.clone(),
+                }
+            })
+            .collect()
     }
 
     fn load_archived_subagent_entries(&self) -> Vec<SubagentRecord> {
-        let archives_root = self.subagent_archives_root();
-        let Ok(entries) = fs::read_dir(&archives_root) else {
-            return Vec::new();
-        };
+        let bundles = self.load_archived_bundles(&self.subagent_archives_root(), || {
+            SyncEngineError::RestoreSubagentManifestMissing
+        });
 
-        let mut result = Vec::new();
-        for entry in entries.filter_map(Result::ok) {
-            let bundle = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&bundle) else {
-                continue;
-            };
-            if !metadata.is_dir() {
-                continue;
-            }
+        bundles
+            .into_iter()
+            .map(|(bundle, manifest)| {
+                let source = bundle.join("source.md");
+                let exists = path_exists_or_symlink(&source);
+                let parsed = fs::read_to_string(&source)
+                    .ok()
+                    .and_then(|raw| parse_subagent_markdown(&raw));
+                let scope = if manifest.original_scope.trim().is_empty() {
+                    String::from("global")
+                } else {
+                    manifest.original_scope.clone()
+                };
 
-            let Ok(manifest) = self.read_archived_subagent_manifest(&bundle) else {
-                continue;
-            };
-            let source = bundle.join("source.md");
-            let exists = path_exists_or_symlink(&source);
-            let parsed = fs::read_to_string(&source)
-                .ok()
-                .and_then(|raw| parse_subagent_markdown(&raw));
-            let scope = if manifest.original_scope.trim().is_empty() {
-                String::from("global")
-            } else {
-                manifest.original_scope.clone()
-            };
-
-            result.push(SubagentRecord {
-                id: skill_entry_id(
-                    "archived",
-                    Some(bundle.to_string_lossy().as_ref()),
-                    &manifest.subagent_key,
-                ),
-                name: manifest.name.clone(),
-                description: parsed
-                    .as_ref()
-                    .map(|entry| entry.description.clone())
-                    .unwrap_or_default(),
-                scope,
-                workspace: manifest.original_workspace.clone(),
-                canonical_source_path: source.display().to_string(),
-                target_paths: manifest.moved_links.clone(),
-                exists,
-                is_symlink_canonical: is_symlink(&source),
-                package_type: String::from("file"),
-                subagent_key: manifest.subagent_key.clone(),
-                symlink_target: source.display().to_string(),
-                model: parsed.as_ref().and_then(|entry| entry.model.clone()),
-                tools: parsed
-                    .as_ref()
-                    .map(|entry| entry.tools.clone())
-                    .unwrap_or_default(),
-                codex_tools_ignored: parsed
-                    .as_ref()
-                    .map(|entry| !entry.tools.is_empty())
-                    .unwrap_or(false),
-                status: SkillLifecycleStatus::Archived,
-                archived_at: Some(manifest.archived_at.clone()),
-                archived_bundle_path: Some(bundle.display().to_string()),
-                archived_original_scope: Some(manifest.original_scope.clone()),
-                archived_original_workspace: manifest.original_workspace.clone(),
-            });
-        }
-
-        result
+                SubagentRecord {
+                    id: skill_entry_id(
+                        "archived",
+                        Some(bundle.to_string_lossy().as_ref()),
+                        &manifest.entity_key,
+                    ),
+                    name: manifest.name.clone(),
+                    description: parsed
+                        .as_ref()
+                        .map(|entry| entry.description.clone())
+                        .unwrap_or_default(),
+                    scope,
+                    workspace: manifest.original_workspace.clone(),
+                    canonical_source_path: source.display().to_string(),
+                    target_paths: manifest.moved_links.clone(),
+                    exists,
+                    is_symlink_canonical: is_symlink(&source),
+                    package_type: String::from("file"),
+                    subagent_key: manifest.entity_key.clone(),
+                    symlink_target: source.display().to_string(),
+                    model: parsed.as_ref().and_then(|entry| entry.model.clone()),
+                    tools: parsed
+                        .as_ref()
+                        .map(|entry| entry.tools.clone())
+                        .unwrap_or_default(),
+                    codex_tools_ignored: parsed
+                        .as_ref()
+                        .map(|entry| !entry.tools.is_empty())
+                        .unwrap_or(false),
+                    status: SkillLifecycleStatus::Archived,
+                    archived_at: Some(manifest.archived_at.clone()),
+                    archived_bundle_path: Some(bundle.display().to_string()),
+                    archived_original_scope: Some(manifest.original_scope.clone()),
+                    archived_original_workspace: manifest.original_workspace.clone(),
+                }
+            })
+            .collect()
     }
 
     fn unique_archived_link_path(

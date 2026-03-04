@@ -166,6 +166,16 @@ export function SkillDetailsPanel({
             </dd>
           </div>
           <div>
+            <dt className="text-muted-foreground">Install status</dt>
+            <dd className="mt-0.5">{details.skill.install_status ?? "n/a"}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Source</dt>
+            <dd className="mt-0.5 break-all font-mono">
+              {details.skill.source ?? "-"}
+            </dd>
+          </div>
+          <div>
             <dt className="text-muted-foreground">Main file</dt>
             <dd className="mt-0.5 flex items-center gap-2 font-mono">
               <span title={details.main_file_path}>

@@ -1,0 +1,132 @@
+use agent_sync_core::{
+    AgentsContextReport, McpAgent, McpServerRecord, ScopeFilter, SkillRecord, SubagentRecord,
+    SyncEngine, SyncState, SyncTrigger,
+};
+
+use crate::{ensure_write_allowed, run_sync_with_lock, RuntimeState};
+
+#[tauri::command]
+pub fn run_sync(
+    trigger: Option<String>,
+    runtime: tauri::State<RuntimeState>,
+) -> Result<SyncState, String> {
+    let engine = SyncEngine::current();
+    ensure_write_allowed(&engine, "run_sync")?;
+    let parsed = trigger
+        .as_deref()
+        .map(SyncTrigger::try_from)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(SyncTrigger::Manual);
+
+    run_sync_with_lock(&engine, &runtime, parsed)
+}
+
+#[tauri::command]
+pub fn get_state() -> SyncState {
+    SyncEngine::current().load_state()
+}
+
+#[tauri::command]
+pub fn get_agents_context_report() -> AgentsContextReport {
+    SyncEngine::current().get_agents_context_report()
+}
+
+#[tauri::command]
+pub fn get_starred_skill_ids() -> Vec<String> {
+    SyncEngine::current().starred_skill_ids()
+}
+
+#[tauri::command]
+pub fn set_skill_starred(skill_id: String, starred: bool) -> Result<Vec<String>, String> {
+    let engine = SyncEngine::current();
+    let state = engine.load_state();
+    if !state.skills.iter().any(|skill| skill.id == skill_id) {
+        return Err(format!("skill id not found: {skill_id}"));
+    }
+
+    engine
+        .set_skill_starred(&skill_id, starred)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_skills(scope: Option<String>) -> Result<Vec<SkillRecord>, String> {
+    let engine = SyncEngine::current();
+    let scope_filter = scope
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<ScopeFilter>()
+                .map_err(|_| format!("unsupported scope: {value}"))
+        })
+        .transpose()?
+        .unwrap_or(ScopeFilter::All);
+    Ok(engine.list_skills(scope_filter))
+}
+
+#[tauri::command]
+pub fn list_subagents(scope: Option<String>) -> Result<Vec<SubagentRecord>, String> {
+    let engine = SyncEngine::current();
+    let scope_filter = scope
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<ScopeFilter>()
+                .map_err(|_| format!("unsupported scope: {value}"))
+        })
+        .transpose()?
+        .unwrap_or(ScopeFilter::All);
+    Ok(engine.list_subagents(scope_filter))
+}
+
+#[tauri::command]
+pub fn get_mcp_servers() -> Vec<McpServerRecord> {
+    SyncEngine::current().list_mcp_servers()
+}
+
+#[tauri::command]
+pub fn set_mcp_server_enabled(
+    server_key: String,
+    agent: String,
+    enabled: bool,
+    scope: Option<String>,
+    workspace: Option<String>,
+    runtime: tauri::State<RuntimeState>,
+) -> Result<SyncState, String> {
+    let engine = SyncEngine::current();
+    ensure_write_allowed(&engine, "set_mcp_server_enabled")?;
+    let parsed = agent
+        .parse::<McpAgent>()
+        .map_err(|error| error.to_string())?;
+    let _guard = runtime
+        .sync_lock
+        .lock()
+        .map_err(|_| String::from("internal lock error"))?;
+    engine
+        .set_mcp_server_enabled(
+            &server_key,
+            parsed,
+            enabled,
+            scope.as_deref(),
+            workspace.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn fix_sync_warning(
+    warning: String,
+    runtime: tauri::State<RuntimeState>,
+) -> Result<(), String> {
+    let engine = SyncEngine::current();
+    ensure_write_allowed(&engine, "fix_sync_warning")?;
+    let _guard = runtime
+        .sync_lock
+        .lock()
+        .map_err(|_| String::from("internal lock error"))?;
+    engine
+        .fix_sync_warning(&warning)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}

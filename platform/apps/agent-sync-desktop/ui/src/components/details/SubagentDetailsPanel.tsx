@@ -6,16 +6,32 @@ import type { SubagentDetails } from "../../types";
 
 type SubagentDetailsPanelProps = {
   subagentDetails: SubagentDetails;
+  busy: boolean;
   openTargetMenu: boolean;
+  actionsMenuOpen: boolean;
   onToggleOpenTargetMenu: () => void;
+  onToggleActionsMenu: () => void;
   onOpenPath: (target: "folder" | "file") => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  onRequestDelete: () => void;
 };
+
+function subagentStatus(subagent: { status?: string }): string {
+  return subagent.status ?? "active";
+}
 
 export function SubagentDetailsPanel({
   subagentDetails,
+  busy,
   openTargetMenu,
+  actionsMenuOpen,
   onToggleOpenTargetMenu,
+  onToggleActionsMenu,
   onOpenPath,
+  onArchive,
+  onRestore,
+  onRequestDelete,
 }: SubagentDetailsPanelProps) {
   return (
     <>
@@ -38,11 +54,21 @@ export function SubagentDetailsPanel({
             >
               Open…
             </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="More actions"
+              disabled={busy}
+              aria-expanded={actionsMenuOpen}
+              onClick={onToggleActionsMenu}
+            >
+              ⋯
+            </Button>
 
             {openTargetMenu ? (
               <div
                 role="menu"
-                className="absolute right-0 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
+                className="absolute right-14 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
               >
                 <button
                   type="button"
@@ -63,12 +89,56 @@ export function SubagentDetailsPanel({
                 </button>
               </div>
             ) : null}
+
+            {actionsMenuOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 top-8 z-20 min-w-36 rounded-md border border-border/70 bg-card p-1 shadow-sm"
+              >
+                {subagentStatus(subagentDetails.subagent) === "active" ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={onArchive}
+                  >
+                    Archive
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    className="block w-full rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={onRestore}
+                  >
+                    Restore
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  className="block w-full rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={onRequestDelete}
+                >
+                  Delete
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+          <div>
+            <dt className="text-muted-foreground">Status</dt>
+            <dd className="mt-0.5 capitalize">
+              {subagentStatus(subagentDetails.subagent)}
+            </dd>
+          </div>
           <div>
             <dt className="text-muted-foreground">Workspace</dt>
             <dd className="mt-0.5 break-all font-mono">

@@ -195,6 +195,7 @@ export type DashboardSnapshot = {
   state: SyncState;
   starredSkillIds: string[];
   subagents: SubagentRecord[];
+  agentsReport: AgentsContextReport | null;
 };
 
 export type SkillDetails = {
