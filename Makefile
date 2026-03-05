@@ -6,7 +6,7 @@ APP_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop
 UI_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop/ui
 TAURI_DIR := $(PLATFORM_DIR)/apps/agent-sync-desktop/src-tauri
 
-.PHONY: all build run app lint lint-fix prepare-dotagents-runtime lint-rust lint-fix-rust lint-ui lint-fix-ui lint-workflows test test-rust typecheck-ts check-rust hooks-install release
+.PHONY: all build run app lint lint-fix prepare-dotagents-runtime ensure-ui-dist lint-rust lint-fix-rust lint-ui lint-fix-ui lint-workflows test test-rust typecheck-ts check-rust hooks-install release
 
 all: app
 
@@ -39,9 +39,11 @@ prepare-dotagents-runtime:
 	"$(ROOT_DIR)/scripts/repair-tauri-cache.sh" "$(ROOT_DIR)"
 	cd "$(UI_DIR)" && npm run dotagents:prepare
 
-lint-rust: prepare-dotagents-runtime
-	cd "$(PLATFORM_DIR)" && cargo fmt --all --check
+ensure-ui-dist:
 	mkdir -p "$(UI_DIR)/dist"
+
+lint-rust: prepare-dotagents-runtime ensure-ui-dist
+	cd "$(PLATFORM_DIR)" && cargo fmt --all --check
 	cd "$(PLATFORM_DIR)" && cargo clippy --workspace --all-targets -- -D warnings
 
 lint-fix-rust:
@@ -67,15 +69,13 @@ lint-workflows:
 
 test: test-rust
 
-test-rust: prepare-dotagents-runtime
-	mkdir -p "$(UI_DIR)/dist"
+test-rust: prepare-dotagents-runtime ensure-ui-dist
 	cd "$(PLATFORM_DIR)" && cargo test --workspace
 
 typecheck-ts:
 	cd "$(UI_DIR)" && npx tsc --noEmit
 
-check-rust: prepare-dotagents-runtime
-	mkdir -p "$(UI_DIR)/dist"
+check-rust: prepare-dotagents-runtime ensure-ui-dist
 	cd "$(PLATFORM_DIR)" && cargo check --workspace
 
 hooks-install:

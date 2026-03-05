@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { RefreshIntervalMinutes } from "../types";
 
 type UseAutoRefreshOptions = {
@@ -17,7 +17,7 @@ function toMilliseconds(intervalMinutes: RefreshIntervalMinutes): number {
 }
 
 function hasCatch(value: void | Promise<void>): value is Promise<void> {
-  return !!value && typeof (value as { catch?: unknown }).catch === "function";
+  return value instanceof Promise;
 }
 
 export function useAutoRefresh({
@@ -26,10 +26,7 @@ export function useAutoRefresh({
   onRefresh,
   resetSignal = 0,
 }: UseAutoRefreshOptions): UseAutoRefreshResult {
-  const intervalMs = useMemo(
-    () => toMilliseconds(intervalMinutes),
-    [intervalMinutes],
-  );
+  const intervalMs = toMilliseconds(intervalMinutes);
   const [nextRunAt, setNextRunAt] = useState<number | null>(() =>
     enabled && intervalMs > 0 ? Date.now() + intervalMs : null,
   );

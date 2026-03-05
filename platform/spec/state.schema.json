@@ -15,6 +15,19 @@
     "top_skills",
     "top_subagents"
   ],
+  "$defs": {
+    "summary_counts": {
+      "type": "object",
+      "required": ["global_count", "project_count", "conflict_count", "mcp_count", "mcp_warning_count"],
+      "properties": {
+        "global_count": { "type": "integer", "minimum": 0 },
+        "project_count": { "type": "integer", "minimum": 0 },
+        "conflict_count": { "type": "integer", "minimum": 0 },
+        "mcp_count": { "type": "integer", "minimum": 0 },
+        "mcp_warning_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
   "properties": {
     "version": { "type": "integer", "const": 2 },
     "generated_at": { "type": "string", "format": "date-time" },
@@ -37,28 +50,8 @@
         "warnings": { "type": "array", "items": { "type": "string" } }
       }
     },
-    "summary": {
-      "type": "object",
-      "required": ["global_count", "project_count", "conflict_count", "mcp_count", "mcp_warning_count"],
-      "properties": {
-        "global_count": { "type": "integer", "minimum": 0 },
-        "project_count": { "type": "integer", "minimum": 0 },
-        "conflict_count": { "type": "integer", "minimum": 0 },
-        "mcp_count": { "type": "integer", "minimum": 0 },
-        "mcp_warning_count": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "subagent_summary": {
-      "type": "object",
-      "required": ["global_count", "project_count", "conflict_count", "mcp_count", "mcp_warning_count"],
-      "properties": {
-        "global_count": { "type": "integer", "minimum": 0 },
-        "project_count": { "type": "integer", "minimum": 0 },
-        "conflict_count": { "type": "integer", "minimum": 0 },
-        "mcp_count": { "type": "integer", "minimum": 0 },
-        "mcp_warning_count": { "type": "integer", "minimum": 0 }
-      }
-    },
+    "summary": { "$ref": "#/$defs/summary_counts" },
+    "subagent_summary": { "$ref": "#/$defs/summary_counts" },
     "skills": {
       "type": "array",
       "items": {

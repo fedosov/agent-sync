@@ -23,12 +23,7 @@ export function useSkillDetails({
 
   useEffect(() => {
     const next = details?.skill.name ?? "";
-    const resetTimer = window.setTimeout(() => {
-      setRenameDraft(next);
-    }, 0);
-    return () => {
-      window.clearTimeout(resetTimer);
-    };
+    queueMicrotask(() => setRenameDraft(next));
   }, [details?.skill.name, details?.skill.skill_key]);
 
   return {
