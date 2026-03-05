@@ -1,9 +1,9 @@
 import { Button } from "../ui/button";
-import { StarIcon } from "../ui/StarIcon";
-import { CardContent, CardHeader, CardTitle } from "../ui/card";
+import { CardContent } from "../ui/card";
 import { compactPath, formatUnixTime } from "../../lib/formatting";
 import { subagentStatus } from "../../lib/catalogUtils";
 import type { SubagentDetails } from "../../types";
+import { EntityDetailHeader } from "./EntityDetailHeader";
 
 type SubagentDetailsPanelProps = {
   subagentDetails: SubagentDetails;
@@ -36,30 +36,13 @@ export function SubagentDetailsPanel({
 }: SubagentDetailsPanelProps) {
   return (
     <>
-      <CardHeader className="border-b border-border/60 pb-3">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="flex items-start gap-1.5">
-            <button
-              type="button"
-              aria-label={isFavorite ? "Unstar subagent" : "Star subagent"}
-              className={
-                isFavorite
-                  ? "mt-0.5 text-amber-400 hover:text-amber-500"
-                  : "mt-0.5 text-muted-foreground/50 hover:text-amber-400"
-              }
-              onClick={onToggleFavorite}
-            >
-              <StarIcon filled={isFavorite} className="h-4 w-4" />
-            </button>
-            <div>
-              <CardTitle className="text-lg leading-tight">
-                {subagentDetails.subagent.name}
-              </CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {subagentDetails.subagent.subagent_key}
-              </p>
-            </div>
-          </div>
+      <EntityDetailHeader
+        name={subagentDetails.subagent.name}
+        entityKey={subagentDetails.subagent.subagent_key}
+        entityLabel="subagent"
+        isFavorite={isFavorite}
+        onToggleFavorite={onToggleFavorite}
+        actions={
           <div className="relative flex items-center gap-1.5">
             <Button
               size="sm"
@@ -143,8 +126,8 @@ export function SubagentDetailsPanel({
               </div>
             ) : null}
           </div>
-        </div>
-      </CardHeader>
+        }
+      />
 
       <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">

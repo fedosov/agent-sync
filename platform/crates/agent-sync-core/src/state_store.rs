@@ -1,4 +1,4 @@
-use crate::error::{write_json_pretty, SyncEngineError};
+use crate::error::{load_json_or_default, write_json_pretty, SyncEngineError};
 use crate::models::SyncState;
 use crate::paths::SyncPaths;
 
@@ -21,14 +21,7 @@ impl SyncStateStore {
     }
 
     pub fn load_state(&self) -> SyncState {
-        let Ok(data) = std::fs::read(&self.paths.state_path) else {
-            return SyncState::default();
-        };
-
-        serde_json::from_slice(&data).unwrap_or_else(|error| {
-            tracing::warn!("corrupt state file {:?}: {error}", self.paths.state_path);
-            SyncState::default()
-        })
+        load_json_or_default(&self.paths.state_path, "state file")
     }
 
     pub fn save_state(&self, state: &SyncState) -> Result<(), SyncEngineError> {

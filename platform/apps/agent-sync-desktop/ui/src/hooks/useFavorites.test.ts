@@ -52,4 +52,31 @@ describe("useFavorites", () => {
     const { result } = renderHook(() => useFavorites());
     expect(result.current.favorites.subagents.size).toBe(0);
   });
+
+  it("filters out non-string elements from stored arrays", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        subagents: ["ok", 42, null, true],
+        mcp: [{}],
+        agents: [],
+      }),
+    );
+
+    const { result } = renderHook(() => useFavorites());
+    expect(result.current.favorites.subagents.size).toBe(0);
+    expect(result.current.favorites.mcp.size).toBe(0);
+  });
+
+  it("falls back to empty when stored field is not an array", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ subagents: "bad", mcp: 123, agents: null }),
+    );
+
+    const { result } = renderHook(() => useFavorites());
+    expect(result.current.favorites.subagents.size).toBe(0);
+    expect(result.current.favorites.mcp.size).toBe(0);
+    expect(result.current.favorites.agents.size).toBe(0);
+  });
 });

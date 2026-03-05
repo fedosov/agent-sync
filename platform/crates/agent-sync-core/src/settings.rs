@@ -1,4 +1,4 @@
-use crate::error::{write_json_pretty, SyncEngineError};
+use crate::error::{load_json_or_default, write_json_pretty, SyncEngineError};
 use crate::paths::SyncPaths;
 use serde::{Deserialize, Serialize};
 
@@ -85,17 +85,7 @@ impl SyncPreferencesStore {
     }
 
     pub fn load_settings(&self) -> SyncAppSettings {
-        let Ok(data) = std::fs::read(&self.paths.app_settings_path) else {
-            return SyncAppSettings::default();
-        };
-
-        serde_json::from_slice(&data).unwrap_or_else(|error| {
-            tracing::warn!(
-                "corrupt settings file {:?}: {error}",
-                self.paths.app_settings_path
-            );
-            SyncAppSettings::default()
-        })
+        load_json_or_default(&self.paths.app_settings_path, "settings file")
     }
 
     pub fn save_settings(&self, settings: &SyncAppSettings) -> Result<(), SyncEngineError> {

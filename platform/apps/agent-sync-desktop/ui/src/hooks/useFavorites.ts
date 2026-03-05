@@ -11,16 +11,20 @@ type UseFavoritesResult = {
   toggleFavorite: (kind: FavoritesKind, id: string) => void;
 };
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
 function loadFromStorage(): FavoritesData {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return { subagents: [], mcp: [], agents: [] };
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- JSON.parse returns unknown
-    const parsed: Partial<FavoritesData> = JSON.parse(raw);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- validated below via isStringArray
+    const parsed: Record<string, unknown> = JSON.parse(raw);
     return {
-      subagents: Array.isArray(parsed.subagents) ? parsed.subagents : [],
-      mcp: Array.isArray(parsed.mcp) ? parsed.mcp : [],
-      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      subagents: isStringArray(parsed.subagents) ? parsed.subagents : [],
+      mcp: isStringArray(parsed.mcp) ? parsed.mcp : [],
+      agents: isStringArray(parsed.agents) ? parsed.agents : [],
     };
   } catch {
     return { subagents: [], mcp: [], agents: [] };

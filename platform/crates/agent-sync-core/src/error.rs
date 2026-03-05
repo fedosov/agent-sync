@@ -194,6 +194,20 @@ impl SyncEngineError {
     }
 }
 
+/// Load a JSON file, returning `T::default()` if the file is missing or corrupt.
+pub fn load_json_or_default<T: serde::de::DeserializeOwned + Default>(
+    path: &std::path::Path,
+    label: &str,
+) -> T {
+    let Ok(data) = std::fs::read(path) else {
+        return T::default();
+    };
+    serde_json::from_slice(&data).unwrap_or_else(|error| {
+        tracing::warn!("corrupt {label} {path:?}: {error}");
+        T::default()
+    })
+}
+
 /// Serialize to pretty-printed JSON with a trailing newline.
 pub fn render_json_pretty(value: &impl serde::Serialize) -> Result<Vec<u8>, serde_json::Error> {
     let mut data = serde_json::to_vec_pretty(value)?;
@@ -208,4 +222,44 @@ pub fn write_json_pretty(
 ) -> Result<(), SyncEngineError> {
     let data = render_json_pretty(value).map_err(SyncEngineError::Json)?;
     std::fs::write(path, data).map_err(|e| SyncEngineError::io(path, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_json_or_default;
+    use serde::{Deserialize, Serialize};
+    use std::io::Write;
+
+    #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+    struct Dummy {
+        #[serde(default)]
+        value: u32,
+    }
+
+    #[test]
+    fn returns_default_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.json");
+        let result: Dummy = load_json_or_default(&path, "test");
+        assert_eq!(result, Dummy::default());
+    }
+
+    #[test]
+    fn returns_default_when_file_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"not json!").unwrap();
+        let result: Dummy = load_json_or_default(&path, "test");
+        assert_eq!(result, Dummy::default());
+    }
+
+    #[test]
+    fn loads_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("good.json");
+        std::fs::write(&path, br#"{"value":42}"#).unwrap();
+        let result: Dummy = load_json_or_default(&path, "test");
+        assert_eq!(result, Dummy { value: 42 });
+    }
 }
