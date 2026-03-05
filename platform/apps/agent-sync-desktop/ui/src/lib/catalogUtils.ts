@@ -103,8 +103,6 @@ export function isFixableSyncWarning(warning: string): boolean {
   return syncWarningFixSummary(warning) !== null;
 }
 
-export { formatIsoTime } from "./formatting";
-
 export type AuditStatusFilter = AuditEventStatus | "all";
 
 export function parseAuditStatusFilter(value: string): AuditStatusFilter {
@@ -119,7 +117,7 @@ export function parseAuditStatusFilter(value: string): AuditStatusFilter {
   }
 }
 
-export function parseFocusKind(value: string | null): FocusKind {
+function parseFocusKind(value: string | null): FocusKind {
   if (
     value === "skills" ||
     value === "subagents" ||

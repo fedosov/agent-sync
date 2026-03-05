@@ -26,10 +26,7 @@ impl SyncStateStore {
         };
 
         serde_json::from_slice(&data).unwrap_or_else(|error| {
-            eprintln!(
-                "warning: corrupt state file {:?}: {error}",
-                self.paths.state_path
-            );
+            tracing::warn!("corrupt state file {:?}: {error}", self.paths.state_path);
             SyncState::default()
         })
     }

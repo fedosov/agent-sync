@@ -1,3 +1,4 @@
+import { statusRank } from "./lib/catalogUtils";
 import { pickPreferred } from "./lib/utils";
 import type { SkillRecord } from "./types";
 
@@ -24,8 +25,6 @@ export function normalizeSkillKey(title: string): string {
   return normalized.replace(/^-+|-+$/g, "");
 }
 
-export { formatUnixTime } from "./lib/formatting";
-
 export function pickSelectedSkillKey(
   skills: SkillRecord[],
   preferredKey?: string | null,
@@ -41,8 +40,6 @@ export function sortAndFilterSkills(
 ): SkillRecord[] {
   const normalizedQuery = query.trim().toLowerCase();
   const starred = new Set(starredSkillIds);
-  const statusRank = (status: SkillRecord["status"]) =>
-    status === "active" ? 0 : 1;
   const starredRank = (id: string) => (starred.has(id) ? 0 : 1);
   const scopeRank = (scope: SkillRecord["scope"]) =>
     scope === "global" ? 0 : 1;

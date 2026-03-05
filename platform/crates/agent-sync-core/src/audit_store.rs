@@ -38,10 +38,7 @@ impl SyncAuditStore {
         serde_json::from_slice::<AuditLogPayload>(&data)
             .map(|payload| payload.events)
             .unwrap_or_else(|error| {
-                eprintln!(
-                    "warning: corrupt audit log {:?}: {error}",
-                    self.paths.audit_log_path
-                );
+                tracing::warn!("corrupt audit log {:?}: {error}", self.paths.audit_log_path);
                 Vec::new()
             })
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { formatUnixTime } from "./lib/formatting";
 import {
-  formatUnixTime,
   normalizeSkillKey,
   pickSelectedSkillKey,
   sortAndFilterSkills,

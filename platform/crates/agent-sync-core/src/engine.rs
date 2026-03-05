@@ -1333,9 +1333,10 @@ impl SyncEngine {
             }
         }
 
-        let old_managed_links = self.load_managed_links_manifest();
+        let old_managed_links = self.load_managed_links_manifest_from(".skill-sync-manifest.json");
         let mut new_managed_links: HashSet<String> = HashSet::new();
-        let old_subagent_managed_links = self.load_subagent_managed_links_manifest();
+        let old_subagent_managed_links =
+            self.load_managed_links_manifest_from(".subagent-sync-manifest.json");
         let mut new_subagent_managed_links: HashSet<String> = HashSet::new();
         let mut entries: Vec<SkillRecord> = Vec::new();
         let mut subagent_entries: Vec<SubagentRecord> = Vec::new();
@@ -2452,37 +2453,14 @@ impl SyncEngine {
         }
     }
 
-    fn load_managed_links_manifest(&self) -> HashSet<String> {
+    fn load_managed_links_manifest_from(&self, filename: &str) -> HashSet<String> {
         #[derive(Debug, Deserialize)]
         struct Manifest {
             #[serde(default, rename = "managed_links")]
             managed_links: Vec<String>,
         }
 
-        let manifest = self
-            .environment
-            .runtime_directory
-            .join(".skill-sync-manifest.json");
-        let Ok(data) = fs::read(&manifest) else {
-            return HashSet::new();
-        };
-        let Ok(payload) = serde_json::from_slice::<Manifest>(&data) else {
-            return HashSet::new();
-        };
-        payload.managed_links.into_iter().collect()
-    }
-
-    fn load_subagent_managed_links_manifest(&self) -> HashSet<String> {
-        #[derive(Debug, Deserialize)]
-        struct Manifest {
-            #[serde(default, rename = "managed_links")]
-            managed_links: Vec<String>,
-        }
-
-        let manifest = self
-            .environment
-            .runtime_directory
-            .join(".subagent-sync-manifest.json");
+        let manifest = self.environment.runtime_directory.join(filename);
         let Ok(data) = fs::read(&manifest) else {
             return HashSet::new();
         };

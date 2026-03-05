@@ -2,8 +2,7 @@ import { Button } from "../ui/button";
 import { StarIcon } from "../ui/StarIcon";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
-import { compactPath } from "../../lib/formatting";
-import { formatUnixTime } from "../../skillUtils";
+import { compactPath, formatUnixTime } from "../../lib/formatting";
 import type { SkillDetails } from "../../types";
 
 type SkillDetailsPanelProps = {

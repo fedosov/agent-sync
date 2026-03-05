@@ -68,7 +68,7 @@ Current strict CLI supports:
 - `agent-sync sync --scope <all|user|project> [--json]`
 - `agent-sync watch --scope <all|user|project> [--interval-seconds N]`
 - `agent-sync skills <install|list|add|remove|update> ...`
-- `agent-sync mcp <list|add|remove> ...`
+- `agent-sync mcp <list|add|remove|fix-unmanaged-claude> ...`
 - `agent-sync migrate-dotagents --scope <all|user|project>`
 - `agent-sync doctor`
 

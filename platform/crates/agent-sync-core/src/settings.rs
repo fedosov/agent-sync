@@ -90,8 +90,8 @@ impl SyncPreferencesStore {
         };
 
         serde_json::from_slice(&data).unwrap_or_else(|error| {
-            eprintln!(
-                "warning: corrupt settings file {:?}: {error}",
+            tracing::warn!(
+                "corrupt settings file {:?}: {error}",
                 self.paths.app_settings_path
             );
             SyncAppSettings::default()

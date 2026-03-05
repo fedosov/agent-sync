@@ -43,10 +43,11 @@ make lint-fix
 Run tests:
 
 ```bash
-cd platform
-cargo test
+# Rust tests (from repo root)
+make test
 
-cd apps/agent-sync-desktop/ui
+# UI tests
+cd platform/apps/agent-sync-desktop/ui
 npm run test:coverage
 ```
 

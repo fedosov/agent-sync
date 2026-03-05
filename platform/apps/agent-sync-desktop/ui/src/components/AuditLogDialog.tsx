@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { formatIsoTime } from "../lib/formatting";
 import {
-  formatIsoTime,
   parseAuditStatusFilter,
   type AuditStatusFilter,
 } from "../lib/catalogUtils";

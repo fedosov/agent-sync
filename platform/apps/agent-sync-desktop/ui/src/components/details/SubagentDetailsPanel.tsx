@@ -1,8 +1,7 @@
 import { Button } from "../ui/button";
 import { StarIcon } from "../ui/StarIcon";
 import { CardContent, CardHeader, CardTitle } from "../ui/card";
-import { compactPath } from "../../lib/formatting";
-import { formatUnixTime } from "../../skillUtils";
+import { compactPath, formatUnixTime } from "../../lib/formatting";
 import { subagentStatus } from "../../lib/catalogUtils";
 import type { SubagentDetails } from "../../types";
 
