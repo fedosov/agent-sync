@@ -3811,3 +3811,63 @@ path = \"/old/skill/path\"\n\
         "no orphaned # agent-sync:end markers should remain; begins={begin_count}, ends={orphan_count}"
     );
 }
+
+#[test]
+fn run_sync_deduplicates_codex_mcp_when_unmanaged_and_managed_both_exist() {
+    let temp = TempDir::new().expect("tempdir");
+    let engine = engine_in_temp(&temp);
+    let home = engine.environment().home_directory.clone();
+
+    // Central catalog with exa enabled for codex
+    write_text(
+        &home.join(".config").join("ai-agents").join("config.toml"),
+        r#"
+# agent-sync:mcp:begin
+[mcp_catalog."global::exa"]
+server_key = "exa"
+scope = "global"
+transport = "http"
+url = "https://mcp.exa.ai/mcp"
+[mcp_catalog."global::exa".enabled_by_agent]
+codex = true
+claude = false
+project = false
+# agent-sync:mcp:end
+"#,
+    );
+
+    // Pre-seed codex config.toml with:
+    //   - orphaned skills block (causes parse_unmanaged_codex_table failure)
+    //   - unmanaged [mcp_servers.exa] entry
+    // This creates a scenario where the primary dedup may not catch the duplicate.
+    write_text(
+        &home.join(".codex").join("config.toml"),
+        r#"[[skills.config]]
+path = "/Users/test/.agents/skills/alpha"
+enabled = true
+
+[mcp_servers.exa]
+type = "http"
+url = "https://mcp.exa.ai/mcp"
+"#,
+    );
+
+    let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
+    assert_eq!(state.summary.mcp_count, 1);
+
+    let codex_raw =
+        fs::read_to_string(home.join(".codex").join("config.toml")).expect("read codex");
+
+    // exa must appear exactly once
+    let exa_count = count_occurrences(&codex_raw, "[mcp_servers.exa]");
+    assert_eq!(
+        exa_count, 1,
+        "exa should appear exactly once after dedup; got:\n{codex_raw}"
+    );
+
+    // Output must be valid TOML
+    assert!(
+        toml::from_str::<toml::Table>(&codex_raw).is_ok(),
+        "output must be valid TOML after dedup; got:\n{codex_raw}"
+    );
+}

@@ -753,6 +753,16 @@ impl SyncEngine {
                 );
                 let mcp_outcome = mcp_registry.sync(&workspaces)?;
 
+                // Final-pass dedup: guarantee no duplicate [mcp_servers.*] keys in Codex config.
+                let codex_config_path = self
+                    .environment
+                    .home_directory
+                    .join(".codex")
+                    .join("config.toml");
+                if codex_config_path.exists() {
+                    McpRegistry::deduplicate_codex_toml_file(&codex_config_path)?;
+                }
+
                 let finished = Utc::now();
                 let state = self.make_state(
                     SyncHealthStatus::Ok,
