@@ -59,6 +59,7 @@ Prefer Makefile targets over raw commands.
 | Run desktop app | `./scripts/run-tauri-gui.sh` |
 | UI tests | `cd platform/apps/agent-sync-desktop/ui && npm run test` |
 | UI test coverage | `cd platform/apps/agent-sync-desktop/ui && npm run test:coverage` |
+| Arch guard | `make check-arch` |
 
 ## Strict CLI Surface
 
