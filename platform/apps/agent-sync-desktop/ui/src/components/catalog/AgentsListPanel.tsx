@@ -1,45 +1,46 @@
+import { compactPath } from "../../lib/formatting";
 import { cn } from "../../lib/utils";
-import type { SubagentRecord } from "../../types";
-import { ScopeMarker } from "./ScopeMarker";
+import type { AgentContextEntry } from "../../types";
+import { severityDotClass } from "../../lib/catalogUtils";
 import { ScopeGroupedCatalog } from "./ScopeGroupedCatalog";
 import { StarIcon } from "../ui/StarIcon";
 
-type SubagentListPanelProps = {
-  subagents: SubagentRecord[];
+type AgentsListPanelProps = {
+  entries: AgentContextEntry[];
   query: string;
-  selectedSubagentId: string | null;
+  selectedAgentEntryId: string | null;
   favorites: Set<string>;
   emptyText: string;
   expandedProjectGroups: Record<string, boolean>;
-  onSelect: (subagentId: string) => void;
+  onSelect: (entryId: string) => void;
   onToggleProjectGroup: (groupKey: string) => void;
   onCloseMenus: () => void;
 };
 
-export function SubagentListPanel({
-  subagents,
+export function AgentsListPanel({
+  entries,
   query,
-  selectedSubagentId,
+  selectedAgentEntryId,
   favorites,
   emptyText,
   expandedProjectGroups,
   onSelect,
   onToggleProjectGroup,
   onCloseMenus,
-}: SubagentListPanelProps) {
+}: AgentsListPanelProps) {
   return (
     <ScopeGroupedCatalog
-      items={subagents}
+      items={entries}
       query={query}
       emptyText={emptyText}
       expandedProjectGroups={expandedProjectGroups}
-      getItemKey={(subagent) => subagent.id}
-      getScope={(subagent) => subagent.scope}
-      getWorkspace={(subagent) => subagent.workspace}
-      isItemSelected={(subagent) => subagent.id === selectedSubagentId}
+      getItemKey={(entry) => entry.id}
+      getScope={(entry) => entry.scope}
+      getWorkspace={(entry) => entry.workspace}
+      isItemSelected={(entry) => entry.id === selectedAgentEntryId}
       onToggleProjectGroup={onToggleProjectGroup}
-      renderItem={(subagent) => {
-        const selected = subagent.id === selectedSubagentId;
+      renderItem={(entry) => {
+        const selected = entry.id === selectedAgentEntryId;
         return (
           <button
             type="button"
@@ -48,29 +49,34 @@ export function SubagentListPanel({
               selected ? "bg-accent/85 text-foreground" : "hover:bg-accent/55",
             )}
             onClick={() => {
-              onSelect(subagent.id);
+              onSelect(entry.id);
               onCloseMenus();
             }}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="flex min-w-0 items-center gap-1">
-                {favorites.has(subagent.id) ? (
+              <span className="flex min-w-0 items-center gap-1.5">
+                {favorites.has(entry.id) ? (
                   <StarIcon
                     filled
                     className="h-3 w-3 shrink-0 text-amber-400"
                   />
                 ) : null}
+                <span
+                  aria-hidden="true"
+                  className={severityDotClass(entry.severity)}
+                />
                 <span className="truncate text-sm font-medium">
-                  {subagent.name}
+                  {entry.scope === "global"
+                    ? "Global AGENTS.md"
+                    : "Project AGENTS.md"}
                 </span>
               </span>
-              <ScopeMarker scope={subagent.scope} />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {entry.severity}
+              </span>
             </div>
-            <p
-              aria-hidden="true"
-              className="mt-0.5 truncate text-[11px] text-muted-foreground"
-            >
-              {subagent.subagent_key}
+            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+              {compactPath(entry.root_path)}
             </p>
           </button>
         );

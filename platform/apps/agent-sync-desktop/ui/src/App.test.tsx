@@ -6,9 +6,11 @@ import { CATALOG_FOCUS_STORAGE_KEY } from "./lib/catalogUtils";
 import * as tauriApi from "./tauriApi";
 import type {
   AgentsContextReport,
+  AgentContextEntry,
   McpServerRecord,
   SkillDetails,
   SkillRecord,
+  SubagentRecord,
   SyncState,
 } from "./types";
 
@@ -62,6 +64,22 @@ function createLocalStorageMock(): Storage {
   };
 }
 
+function getActiveCatalogPanel(container: HTMLElement): HTMLElement {
+  return within(container).getByTestId("active-catalog-panel");
+}
+
+function getProjectGroupButtonByPath(
+  panel: HTMLElement,
+  workspaceLabel: string,
+): HTMLButtonElement {
+  const pathLabel = within(panel).getByText(workspaceLabel);
+  const button = pathLabel.closest("button[aria-expanded]");
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`Expected project group button for ${workspaceLabel}`);
+  }
+  return button;
+}
+
 const projectSkill: SkillRecord = {
   id: "project-1",
   name: "Project Skill",
@@ -85,6 +103,148 @@ const archivedSkill: SkillRecord = {
   package_type: "dir",
   skill_key: "archived-skill",
 };
+
+function buildSkillRecord(
+  overrides: Partial<SkillRecord> &
+    Pick<SkillRecord, "id" | "name" | "skill_key">,
+): SkillRecord {
+  const {
+    id,
+    name,
+    skill_key: skillKey,
+    scope = "global",
+    target_paths: targetPaths,
+    ...rest
+  } = overrides;
+  const workspace =
+    scope === "project"
+      ? (overrides.workspace ?? `/tmp/workspaces/${skillKey}`)
+      : null;
+  const canonicalSourcePath =
+    overrides.canonical_source_path ??
+    (workspace
+      ? `${workspace}/.claude/skills/${skillKey}`
+      : `/tmp/home/.agents/skills/${skillKey}`);
+
+  return {
+    id,
+    name,
+    scope,
+    workspace,
+    canonical_source_path: canonicalSourcePath,
+    target_paths: targetPaths ?? [canonicalSourcePath],
+    status: "active",
+    package_type: "dir",
+    skill_key: skillKey,
+    ...rest,
+  };
+}
+
+function buildSubagentRecord(
+  overrides: Partial<SubagentRecord> &
+    Pick<SubagentRecord, "id" | "name" | "subagent_key">,
+): SubagentRecord {
+  const {
+    id,
+    name,
+    subagent_key: subagentKey,
+    description = "Specialized helper",
+    scope = "global",
+    target_paths: targetPaths,
+    symlink_target: symlinkTarget,
+    ...rest
+  } = overrides;
+  const workspace =
+    scope === "project"
+      ? (overrides.workspace ?? `/tmp/workspaces/${subagentKey}`)
+      : null;
+  const canonicalSourcePath =
+    overrides.canonical_source_path ??
+    (workspace
+      ? `${workspace}/.claude/agents/${subagentKey}.md`
+      : `/tmp/home/.claude/agents/${subagentKey}.md`);
+
+  return {
+    id,
+    name,
+    description,
+    scope,
+    workspace,
+    canonical_source_path: canonicalSourcePath,
+    target_paths: targetPaths ?? [canonicalSourcePath],
+    exists: true,
+    is_symlink_canonical: false,
+    package_type: "file",
+    subagent_key: subagentKey,
+    symlink_target: symlinkTarget ?? canonicalSourcePath,
+    model: null,
+    tools: [],
+    codex_tools_ignored: false,
+    ...rest,
+  };
+}
+
+function buildMcpServerRecord(
+  overrides: Partial<McpServerRecord> &
+    Pick<McpServerRecord, "scope" | "server_key">,
+): McpServerRecord {
+  const { server_key: serverKey, scope, targets, ...rest } = overrides;
+  const workspace =
+    scope === "project"
+      ? (overrides.workspace ?? `/tmp/workspaces/${serverKey}`)
+      : null;
+
+  return {
+    server_key: serverKey,
+    scope,
+    workspace,
+    transport: "http",
+    command: null,
+    args: [],
+    url: "https://example.com/mcp",
+    env: {},
+    enabled_by_agent: {
+      codex: true,
+      claude: true,
+      project: scope === "project",
+    },
+    targets: targets ?? (workspace ? [`${workspace}/.mcp.json`] : []),
+    warnings: [],
+    ...rest,
+  };
+}
+
+function buildAgentEntry(
+  overrides: Partial<AgentContextEntry> &
+    Pick<AgentContextEntry, "id" | "root_path" | "scope">,
+): AgentContextEntry {
+  const { id, scope, root_path: rootPath, segments, ...rest } = overrides;
+  const workspace =
+    scope === "project"
+      ? (overrides.workspace ?? rootPath.replace(/\/AGENTS\.md$/, ""))
+      : null;
+
+  return {
+    id,
+    scope,
+    workspace,
+    root_path: rootPath,
+    exists: true,
+    severity: "ok",
+    raw_chars: 1200,
+    raw_lines: 40,
+    rendered_chars: 2400,
+    rendered_lines: 80,
+    tokens_estimate: 600,
+    include_count: 0,
+    missing_includes: [],
+    cycles_detected: [],
+    max_depth_reached: false,
+    diagnostics: [],
+    segments: segments ?? [],
+    ...rest,
+  };
+}
 
 function buildState(
   skills: SkillRecord[],
@@ -669,7 +829,7 @@ describe("App quiet redesign", () => {
     await user.click(
       screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
     );
-    expect(screen.getByText(/workspace-a/)).toBeInTheDocument();
+    expect(screen.getByTitle("/tmp/workspace-a")).toBeInTheDocument();
 
     await user.clear(
       screen.getByPlaceholderText("Search by name, key, scope or workspace"),
@@ -678,7 +838,7 @@ describe("App quiet redesign", () => {
       screen.getByPlaceholderText("Search by name, key, scope or workspace"),
       "critical",
     );
-    expect(screen.getByText(/workspace-a/)).toBeInTheDocument();
+    expect(screen.getByTitle("/tmp/workspace-a")).toBeInTheDocument();
   });
 
   it("persists selected tab and restores it after remount", async () => {
@@ -760,6 +920,344 @@ describe("App quiet redesign", () => {
 
     expect(screen.getAllByText("Project").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Global").length).toBeGreaterThan(0);
+  });
+
+  it("groups skills with Global first and collapses project workspaces by default", async () => {
+    const globalSkill = buildSkillRecord({
+      id: "skill-global",
+      name: "Global Skill",
+      skill_key: "global-skill",
+      scope: "global",
+      workspace: null,
+    });
+    const workspace = "/tmp/projects/workspace-a";
+    const projectScopedSkill = buildSkillRecord({
+      id: "skill-project",
+      name: "Project Scoped Skill",
+      skill_key: "project-scoped-skill",
+      scope: "project",
+      workspace,
+    });
+    const state = buildState([globalSkill, projectScopedSkill]);
+    setApiDefaults(state, {
+      [globalSkill.skill_key]: buildDetails(globalSkill),
+      [projectScopedSkill.skill_key]: buildDetails(projectScopedSkill),
+    });
+
+    const app = render(<App />);
+    const appScope = within(app.container);
+    await appScope.findByRole("heading", { name: globalSkill.name });
+    const catalogPanel = getActiveCatalogPanel(app.container);
+
+    const globalHeading = within(catalogPanel).getByRole("heading", {
+      name: "Global",
+    });
+    const projectGroup = getProjectGroupButtonByPath(catalogPanel, workspace);
+    const pathLabel = within(projectGroup).getByText(workspace);
+
+    expect(
+      globalHeading.compareDocumentPosition(projectGroup) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "false");
+    expect(pathLabel).toBeInTheDocument();
+    expect(
+      within(catalogPanel).queryByRole("button", {
+        name: /Project Scoped Skill/i,
+      }),
+    ).not.toBeInTheDocument();
+
+    expect(within(projectGroup).getByText("workspace-a")).toBeInTheDocument();
+    expect(pathLabel).toHaveAttribute("title", workspace);
+  });
+
+  it("auto-expands the selected skills project group and keeps duplicate basenames separate", async () => {
+    const globalSkill = buildSkillRecord({
+      id: "skill-global-auto",
+      name: "Global Skill Auto",
+      skill_key: "global-skill-auto",
+      scope: "global",
+      workspace: null,
+    });
+    const firstWorkspace = "/tmp/foo/shared";
+    const secondWorkspace = "/var/tmp/bar/shared";
+    const firstProjectSkill = buildSkillRecord({
+      id: "skill-project-shared-a",
+      name: "First Project Skill",
+      skill_key: "first-project-skill",
+      scope: "project",
+      workspace: firstWorkspace,
+    });
+    const secondProjectSkill = buildSkillRecord({
+      id: "skill-project-shared-b",
+      name: "Second Project Skill",
+      skill_key: "second-project-skill",
+      scope: "project",
+      workspace: secondWorkspace,
+    });
+    const state = buildState([
+      firstProjectSkill,
+      globalSkill,
+      secondProjectSkill,
+    ]);
+    setApiDefaults(state, {
+      [globalSkill.skill_key]: buildDetails(globalSkill),
+      [firstProjectSkill.skill_key]: buildDetails(firstProjectSkill),
+      [secondProjectSkill.skill_key]: buildDetails(secondProjectSkill),
+    });
+
+    const app = render(<App />);
+    const appScope = within(app.container);
+    await appScope.findByRole("heading", { name: firstProjectSkill.name });
+    const catalogPanel = getActiveCatalogPanel(app.container);
+
+    const firstProjectGroup = getProjectGroupButtonByPath(
+      catalogPanel,
+      firstWorkspace,
+    );
+    const secondProjectGroup = getProjectGroupButtonByPath(
+      catalogPanel,
+      "/var/.../shared",
+    );
+
+    expect(firstProjectGroup).toHaveAttribute("aria-expanded", "true");
+    expect(secondProjectGroup).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(firstProjectGroup).getByText(firstWorkspace),
+    ).toBeInTheDocument();
+    expect(
+      within(secondProjectGroup).getByText("/var/.../shared"),
+    ).toBeInTheDocument();
+    expect(
+      within(catalogPanel).getByRole("button", {
+        name: /First Project Skill/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(catalogPanel).queryByRole("button", {
+        name: /Second Project Skill/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("groups subagents with Global first and auto-expands matching project workspaces on search", async () => {
+    const globalSkill = buildSkillRecord({
+      id: "skill-subagents-host",
+      name: "Subagents Host Skill",
+      skill_key: "subagents-host-skill",
+      scope: "global",
+      workspace: null,
+    });
+    const globalSubagent = buildSubagentRecord({
+      id: "subagent-global",
+      name: "Global Helper",
+      subagent_key: "global-helper",
+      scope: "global",
+      workspace: null,
+    });
+    const workspace = "/tmp/projects/workspace-subagents";
+    const projectSubagent = buildSubagentRecord({
+      id: "subagent-project",
+      name: "Workspace Search Helper",
+      subagent_key: "workspace-search-helper",
+      scope: "project",
+      workspace,
+    });
+    const state = buildState([globalSkill]);
+    setApiDefaults(state, {
+      [globalSkill.skill_key]: buildDetails(globalSkill),
+    });
+    vi.mocked(tauriApi.listSubagents).mockResolvedValue([
+      globalSubagent,
+      projectSubagent,
+    ]);
+    vi.mocked(tauriApi.getSubagentDetails)
+      .mockResolvedValueOnce({
+        subagent: globalSubagent,
+        main_file_path: globalSubagent.canonical_source_path,
+        main_file_exists: true,
+        main_file_body_preview: "# Global Helper",
+        last_modified_unix_seconds: 1_700_000_000,
+      })
+      .mockResolvedValueOnce({
+        subagent: projectSubagent,
+        main_file_path: projectSubagent.canonical_source_path,
+        main_file_exists: true,
+        main_file_body_preview: "# Workspace Search Helper",
+        last_modified_unix_seconds: 1_700_000_000,
+      });
+
+    const user = userEvent.setup();
+    const app = render(<App />);
+    const appScope = within(app.container);
+    await appScope.findByRole("heading", { name: globalSkill.name });
+
+    await user.click(
+      appScope.getByRole("button", { name: "Switch catalog to Subagents" }),
+    );
+    const catalogPanel = getActiveCatalogPanel(app.container);
+
+    const globalHeading = within(catalogPanel).getByRole("heading", {
+      name: "Global",
+    });
+    const projectGroup = getProjectGroupButtonByPath(catalogPanel, workspace);
+    expect(
+      globalHeading.compareDocumentPosition(projectGroup) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(catalogPanel).queryByRole("button", {
+        name: /Workspace Search Helper/i,
+      }),
+    ).not.toBeInTheDocument();
+
+    await user.type(
+      appScope.getByPlaceholderText("Search by name, key, scope or workspace"),
+      "workspace-search-helper",
+    );
+
+    expect(
+      getProjectGroupButtonByPath(catalogPanel, workspace),
+    ).toHaveAttribute("aria-expanded", "true");
+    await user.click(
+      await within(catalogPanel).findByRole("button", {
+        name: /Workspace Search Helper/i,
+      }),
+    );
+    expect(
+      await appScope.findByRole("heading", { name: "Workspace Search Helper" }),
+    ).toBeInTheDocument();
+  });
+
+  it("groups MCP servers with Global first and preserves project actions inside expanded groups", async () => {
+    const globalSkill = buildSkillRecord({
+      id: "skill-mcp-host",
+      name: "MCP Host Skill",
+      skill_key: "mcp-host-skill",
+      scope: "global",
+      workspace: null,
+    });
+    const workspace = "/tmp/projects/workspace-mcp";
+    const globalServer = buildMcpServerRecord({
+      server_key: "global-exa",
+      scope: "global",
+    });
+    const projectServer = buildMcpServerRecord({
+      server_key: "workspace-exa",
+      scope: "project",
+      workspace,
+    });
+    const state = buildState([globalSkill], [globalServer, projectServer]);
+    setApiDefaults(state, {
+      [globalSkill.skill_key]: buildDetails(globalSkill),
+    });
+
+    const user = userEvent.setup();
+    const app = render(<App />);
+    const appScope = within(app.container);
+    await appScope.findByRole("heading", { name: globalSkill.name });
+
+    await user.click(
+      appScope.getByRole("button", { name: "Switch catalog to MCP" }),
+    );
+    const catalogPanel = getActiveCatalogPanel(app.container);
+
+    const globalHeading = within(catalogPanel).getByRole("heading", {
+      name: "Global",
+    });
+    const projectGroup = getProjectGroupButtonByPath(catalogPanel, workspace);
+    expect(
+      globalHeading.compareDocumentPosition(projectGroup) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(catalogPanel).queryByRole("button", { name: /workspace-exa/i }),
+    ).not.toBeInTheDocument();
+
+    await user.type(
+      appScope.getByPlaceholderText("Search by name, key, scope or workspace"),
+      "workspace-exa",
+    );
+    expect(
+      getProjectGroupButtonByPath(catalogPanel, workspace),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(
+      await within(catalogPanel).findByRole("button", {
+        name: /workspace-exa/i,
+      }),
+    );
+    await user.click(appScope.getByRole("switch", { name: "codex toggle" }));
+
+    await waitFor(() => {
+      expect(tauriApi.setMcpServerEnabled).toHaveBeenCalledWith(
+        "workspace-exa",
+        "codex",
+        false,
+        "project",
+        workspace,
+      );
+    });
+  });
+
+  it("groups Agents.md entries with Global first and auto-expands the selected project workspace", async () => {
+    const globalSkill = buildSkillRecord({
+      id: "skill-agents-host",
+      name: "Agents Host Skill",
+      skill_key: "agents-host-skill",
+      scope: "global",
+      workspace: null,
+    });
+    const workspace = "/tmp/projects/workspace-agents";
+    const projectEntry = buildAgentEntry({
+      id: "project|/tmp/projects/workspace-agents|/tmp/projects/workspace-agents/AGENTS.md",
+      scope: "project",
+      workspace,
+      root_path: `${workspace}/AGENTS.md`,
+      severity: "warning",
+    });
+    const globalEntry = buildAgentEntry({
+      id: "global|global|/tmp/home/AGENTS.md",
+      scope: "global",
+      workspace: null,
+      root_path: "/tmp/home/AGENTS.md",
+      severity: "ok",
+    });
+    const state = buildState([globalSkill]);
+    setApiDefaults(state, {
+      [globalSkill.skill_key]: buildDetails(globalSkill),
+    });
+    vi.mocked(tauriApi.getAgentsContextReport).mockResolvedValue(
+      buildAgentsReport({
+        entries: [projectEntry, globalEntry],
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: globalSkill.name });
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch catalog to Agents.md" }),
+    );
+
+    const globalHeading = screen.getByRole("heading", { name: "Global" });
+    const projectGroup = screen.getByRole("button", {
+      name: /workspace-agents/i,
+    });
+    expect(
+      globalHeading.compareDocumentPosition(projectGroup) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: /Project AGENTS\.md/i }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Project AGENTS.md" }),
+    ).toBeInTheDocument();
   });
 
   it("opens skill folder/file through Open menu", async () => {
@@ -1056,6 +1554,7 @@ describe("App quiet redesign", () => {
       screen.queryByRole("menuitem", { name: "Make global" }),
     ).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: /workspace-a/i }));
     await user.click(screen.getByRole("button", { name: /exa-archived/i }));
     await screen.findByRole("heading", { name: "exa-archived" });
     await user.click(screen.getByRole("button", { name: "More actions" }));
@@ -1126,6 +1625,9 @@ describe("App quiet redesign", () => {
 
     const renameInput = screen.getByPlaceholderText("New skill title");
     await user.clear(renameInput);
+    await waitFor(() => {
+      expect(renameInput).toHaveValue("");
+    });
     await user.type(renameInput, renamedSkill.name);
     await user.click(screen.getByRole("button", { name: "Save name" }));
 
@@ -1599,7 +2101,6 @@ describe("App quiet redesign", () => {
     const row = screen.getByRole("button", { name: /exa/i });
     expect(within(row).getByText("Project")).toBeInTheDocument();
     expect(within(row).getByText("HTTP")).toBeInTheDocument();
-    expect(within(row).getByText("/tmp/workspace-a")).toBeInTheDocument();
     expect(within(row).queryByText("ON")).not.toBeInTheDocument();
     expect(within(row).queryByText("OFF")).not.toBeInTheDocument();
     expect(
@@ -1665,8 +2166,12 @@ describe("App quiet redesign", () => {
       screen.getByRole("button", { name: "Switch catalog to MCP" }),
     );
 
-    expect(screen.getByText("/tmp/workspace-a")).toBeInTheDocument();
-    expect(screen.getByText("/tmp/workspace-b")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /workspace-a/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /workspace-b/i }),
+    ).toBeInTheDocument();
   });
 
   it("hides project agent logo in MCP rows for global scope", async () => {

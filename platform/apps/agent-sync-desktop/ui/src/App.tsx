@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { AgentLogoIcon } from "./components/catalog/AgentLogoIcon";
+import { AgentsListPanel } from "./components/catalog/AgentsListPanel";
+import { McpListPanel } from "./components/catalog/McpListPanel";
 import { SkillListPanel } from "./components/catalog/SkillListPanel";
 import { SubagentListPanel } from "./components/catalog/SubagentListPanel";
-import { ScopeMarker } from "./components/catalog/ScopeMarker";
 import { AuditLogDialog } from "./components/AuditLogDialog";
 import { AgentsDetailsPanel } from "./components/details/AgentsDetailsPanel";
 import { McpDetailsPanel } from "./components/details/McpDetailsPanel";
@@ -16,7 +16,6 @@ import { useSkillDetails } from "./hooks/useSkillDetails";
 import { useEntityDetails } from "./hooks/useEntityDetails";
 import { useFavorites } from "./hooks/useFavorites";
 import { useSyncState, mcpSelectionKey } from "./hooks/useSyncState";
-import { StarIcon } from "./components/ui/StarIcon";
 import {
   toTitleCase,
   subagentStatus,
@@ -34,8 +33,6 @@ import {
   mcpDeleteLabel,
   CATALOG_FOCUS_STORAGE_KEY,
 } from "./lib/catalogUtils";
-import { getVisibleMcpAgents } from "./lib/mcpAgents";
-import { compactPath } from "./lib/formatting";
 import { cn, errorMessage } from "./lib/utils";
 import {
   deleteUnmanagedMcp,
@@ -70,6 +67,7 @@ type DeleteDialogState = {
 type OpenTargetMenu = "skill" | "subagent" | null;
 type ActionsMenuTarget = "skill" | "subagent" | "mcp" | null;
 type DotagentsProofStatus = "idle" | "running" | "ok" | "error";
+type CatalogProjectGroupState = Record<FocusKind, Record<string, boolean>>;
 type AppActionOptions = {
   clearError?: boolean;
   onError?: (message: string) => void | Promise<void>;
@@ -80,6 +78,12 @@ const DOTAGENTS_MIGRATION_REQUIRED =
   "migration required before strict dotagents sync";
 const FILESYSTEM_DISABLED_MESSAGE =
   "Filesystem changes are disabled. Enable 'Allow filesystem changes' first.";
+const EMPTY_PROJECT_GROUP_STATE: CatalogProjectGroupState = {
+  skills: {},
+  subagents: {},
+  mcp: {},
+  agents: {},
+};
 
 function renderSyncWarningText(warning: string) {
   const term = "central catalog";
@@ -150,6 +154,8 @@ export function App() {
     readStoredFocusKind(),
   );
   const [query, setQuery] = useState("");
+  const [expandedProjectGroups, setExpandedProjectGroups] =
+    useState<CatalogProjectGroupState>(EMPTY_PROJECT_GROUP_STATE);
   const [openTargetMenu, setOpenTargetMenu] = useState<OpenTargetMenu>(null);
   const [actionsMenuTarget, setActionsMenuTarget] =
     useState<ActionsMenuTarget>(null);
@@ -622,6 +628,16 @@ export function App() {
     setOpenTargetMenu(null);
   }
 
+  function toggleProjectGroup(kind: FocusKind, groupKey: string) {
+    setExpandedProjectGroups((previous) => ({
+      ...previous,
+      [kind]: {
+        ...previous[kind],
+        [groupKey]: !(previous[kind][groupKey] ?? false),
+      },
+    }));
+  }
+
   const activeSkillCount =
     state?.skills.filter((skill) => skill.status === "active").length ?? 0;
   const archivedSkillCount =
@@ -936,7 +952,10 @@ export function App() {
                 })}
               </div>
 
-              <section className="space-y-1.5 border-t border-border/50 pt-3">
+              <section
+                className="space-y-1.5 border-t border-border/50 pt-3"
+                data-testid="active-catalog-panel"
+              >
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold text-muted-foreground">
                     {activeCatalogTitle}
@@ -949,13 +968,18 @@ export function App() {
                 {focusKind === "skills" ? (
                   <SkillListPanel
                     skills={filteredSkills}
+                    query={query}
                     selectedSkillKey={selectedSkillKey}
                     favorites={starredSkillSet}
                     emptyText={activeCatalogEmptyText}
+                    expandedProjectGroups={expandedProjectGroups.skills}
                     onSelect={(skillKey) => {
                       setSelectedSkillKey(skillKey);
                       closeMenus();
                     }}
+                    onToggleProjectGroup={(groupKey) =>
+                      toggleProjectGroup("skills", groupKey)
+                    }
                     onCloseMenus={closeMenus}
                   />
                 ) : null}
@@ -963,175 +987,58 @@ export function App() {
                 {focusKind === "subagents" ? (
                   <SubagentListPanel
                     subagents={filteredSubagents}
+                    query={query}
                     selectedSubagentId={selectedSubagentId}
                     favorites={favorites.subagents}
                     emptyText={activeCatalogEmptyText}
+                    expandedProjectGroups={expandedProjectGroups.subagents}
                     onSelect={(subagentId) => {
                       setSelectedSubagentId(subagentId);
                       closeMenus();
                     }}
+                    onToggleProjectGroup={(groupKey) =>
+                      toggleProjectGroup("subagents", groupKey)
+                    }
                     onCloseMenus={closeMenus}
                   />
                 ) : null}
 
                 {focusKind === "mcp" ? (
-                  filteredMcpServers.length === 0 ? (
-                    <p className="rounded-md bg-muted/20 px-2 py-2 text-xs text-muted-foreground">
-                      {activeCatalogEmptyText}
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {filteredMcpServers.map((server) => {
-                        const key = mcpSelectionKey(server);
-                        const selected = key === selectedMcpKey;
-                        const rowAgents = getVisibleMcpAgents().map(
-                          (agent) => ({
-                            agent,
-                            enabled: server.enabled_by_agent[agent],
-                          }),
-                        );
-                        return (
-                          <li key={key}>
-                            <button
-                              type="button"
-                              className={cn(
-                                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
-                                selected
-                                  ? "bg-accent/85 text-foreground"
-                                  : "hover:bg-accent/55",
-                              )}
-                              onClick={() => {
-                                setSelectedMcpKey(key);
-                                closeMenus();
-                              }}
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <span className="flex min-w-0 items-center gap-1">
-                                  {favorites.mcp.has(key) ? (
-                                    <StarIcon
-                                      filled
-                                      className="h-3 w-3 shrink-0 text-amber-400"
-                                    />
-                                  ) : null}
-                                  <span className="truncate text-sm font-medium">
-                                    {server.server_key}
-                                  </span>
-                                </span>
-                                <span className="inline-flex items-center gap-1.5">
-                                  <ScopeMarker scope={server.scope} />
-                                  {mcpStatus(server) === "archived" ? (
-                                    <span className="text-[10px] text-muted-foreground">
-                                      Archived
-                                    </span>
-                                  ) : mcpStatus(server) === "unmanaged" ? (
-                                    <span className="text-[10px] text-amber-500 font-medium">
-                                      Unmanaged
-                                    </span>
-                                  ) : null}
-                                </span>
-                              </div>
-                              <div className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                                <span className="flex min-w-0 items-center gap-1.5">
-                                  <span className="shrink-0 font-medium uppercase tracking-wide">
-                                    {server.transport.toUpperCase()}
-                                  </span>
-                                  {server.scope === "project" &&
-                                  server.workspace ? (
-                                    <span
-                                      className="min-w-0 truncate text-[10px]"
-                                      title={server.workspace}
-                                    >
-                                      {server.workspace}
-                                    </span>
-                                  ) : null}
-                                </span>
-                                <ul className="flex shrink-0 items-center gap-1.5">
-                                  {rowAgents.map(({ agent, enabled }) => (
-                                    <li key={agent}>
-                                      <span
-                                        role="img"
-                                        aria-label={`${agent} ${enabled ? "connected" : "disabled"}`}
-                                        className={cn(
-                                          "inline-flex items-center",
-                                          enabled
-                                            ? "text-emerald-500"
-                                            : "text-muted-foreground/50 opacity-30",
-                                        )}
-                                      >
-                                        <AgentLogoIcon
-                                          agent={agent}
-                                          className="h-3.5 w-3.5"
-                                        />
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )
+                  <McpListPanel
+                    servers={filteredMcpServers}
+                    query={query}
+                    selectedMcpKey={selectedMcpKey}
+                    favorites={favorites.mcp}
+                    emptyText={activeCatalogEmptyText}
+                    expandedProjectGroups={expandedProjectGroups.mcp}
+                    onSelect={(key) => {
+                      setSelectedMcpKey(key);
+                      closeMenus();
+                    }}
+                    onToggleProjectGroup={(groupKey) =>
+                      toggleProjectGroup("mcp", groupKey)
+                    }
+                    onCloseMenus={closeMenus}
+                  />
                 ) : null}
 
                 {focusKind === "agents" ? (
-                  filteredAgentEntries.length === 0 ? (
-                    <p className="rounded-md bg-muted/20 px-2 py-2 text-xs text-muted-foreground">
-                      {activeCatalogEmptyText}
-                    </p>
-                  ) : (
-                    <ul className="space-y-0.5">
-                      {filteredAgentEntries.map((entry) => {
-                        const selected = entry.id === selectedAgentEntryId;
-                        return (
-                          <li key={entry.id}>
-                            <button
-                              type="button"
-                              className={cn(
-                                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
-                                selected
-                                  ? "bg-accent/85 text-foreground"
-                                  : "hover:bg-accent/55",
-                              )}
-                              onClick={() => {
-                                setSelectedAgentEntryId(entry.id);
-                                closeMenus();
-                              }}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="flex min-w-0 items-center gap-1.5">
-                                  {favorites.agents.has(entry.id) ? (
-                                    <StarIcon
-                                      filled
-                                      className="h-3 w-3 shrink-0 text-amber-400"
-                                    />
-                                  ) : null}
-                                  <span
-                                    aria-hidden="true"
-                                    className={severityDotClass(entry.severity)}
-                                  />
-                                  <span className="truncate text-sm font-medium">
-                                    {entry.scope === "global"
-                                      ? "Global"
-                                      : "Project"}
-                                  </span>
-                                </span>
-                                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                                  {entry.severity}
-                                </span>
-                              </div>
-                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                                {entry.scope === "project" && entry.workspace
-                                  ? `${entry.workspace} · ${compactPath(entry.root_path)}`
-                                  : compactPath(entry.root_path)}
-                              </p>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )
+                  <AgentsListPanel
+                    entries={filteredAgentEntries}
+                    query={query}
+                    selectedAgentEntryId={selectedAgentEntryId}
+                    favorites={favorites.agents}
+                    emptyText={activeCatalogEmptyText}
+                    expandedProjectGroups={expandedProjectGroups.agents}
+                    onSelect={(entryId) => {
+                      setSelectedAgentEntryId(entryId);
+                      closeMenus();
+                    }}
+                    onToggleProjectGroup={(groupKey) =>
+                      toggleProjectGroup("agents", groupKey)
+                    }
+                    onCloseMenus={closeMenus}
+                  />
                 ) : null}
               </section>
             </CardContent>
