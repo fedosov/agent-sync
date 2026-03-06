@@ -90,6 +90,7 @@ Legacy lifecycle commands are removed in strict mode. Check `platform/spec/cli-c
 ## Working Rules
 
 - No mandatory post-iteration build/copy step.
+- Use Conventional Commits style for commit messages (for example, `fix(ui): preserve rename draft`).
 - When borrowing ideas, patterns, or configs from external repositories, append source notes to `INSPIRATIONS.md`.
 - Keep changes focused; do not edit unrelated files.
 - Add or update tests for behavior changes.

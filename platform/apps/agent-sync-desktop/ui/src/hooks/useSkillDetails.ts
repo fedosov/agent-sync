@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { getSkillDetails } from "../tauriApi";
 import type { SkillDetails } from "../types";
 import { useEntityDetails } from "./useEntityDetails";
@@ -14,17 +14,35 @@ type UseSkillDetailsResult = {
   setRenameDraft: (value: string | ((prev: string) => string)) => void;
 };
 
+type RenameDraftState = {
+  details: SkillDetails | null;
+  value: string;
+};
+
 export function useSkillDetails({
   selectedSkillKey,
   onError,
 }: UseSkillDetailsOptions): UseSkillDetailsResult {
   const details = useEntityDetails(selectedSkillKey, getSkillDetails, onError);
-  const [renameDraft, setRenameDraft] = useState("");
+  const [renameDraftState, setRenameDraftState] = useState<RenameDraftState>({
+    details: null,
+    value: "",
+  });
 
-  useEffect(() => {
-    const next = details?.skill.name ?? "";
-    queueMicrotask(() => setRenameDraft(next));
-  }, [details?.skill.name, details?.skill.skill_key]);
+  const detailName = details?.skill.name ?? "";
+  const renameDraft =
+    renameDraftState.details === details ? renameDraftState.value : detailName;
+
+  function setRenameDraft(value: string | ((prev: string) => string)) {
+    setRenameDraftState((previous) => {
+      const currentValue =
+        previous.details === details ? previous.value : detailName;
+      return {
+        details,
+        value: typeof value === "function" ? value(currentValue) : value,
+      };
+    });
+  }
 
   return {
     details,
