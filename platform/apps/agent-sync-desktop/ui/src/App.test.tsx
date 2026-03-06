@@ -133,9 +133,7 @@ function buildDetails(
     main_file_path: `${skill.canonical_source_path}/SKILL.md`,
     main_file_exists: true,
     main_file_body_preview: "# Preview",
-    main_file_body_preview_truncated: false,
     skill_dir_tree_preview: `${skill.skill_key}/\n\`-- SKILL.md`,
-    skill_dir_tree_preview_truncated: false,
     last_modified_unix_seconds: 1_700_000_000,
     ...overrides,
   };
@@ -273,11 +271,7 @@ function setApiDefaults(
     main_file_path: "/tmp/home/.claude/agents/subagent.md",
     main_file_exists: true,
     main_file_body_preview: "# Subagent",
-    main_file_body_preview_truncated: false,
-    subagent_dir_tree_preview: "agents/\n`-- subagent.md",
-    subagent_dir_tree_preview_truncated: false,
     last_modified_unix_seconds: 1_700_000_000,
-    target_statuses: [],
   });
   vi.mocked(tauriApi.runSync).mockResolvedValue(state);
   vi.mocked(tauriApi.runDotagentsSync).mockResolvedValue(undefined);
@@ -288,7 +282,10 @@ function setApiDefaults(
   vi.mocked(tauriApi.migrateDotagents).mockResolvedValue(undefined);
   vi.mocked(tauriApi.mutateCatalogItem).mockResolvedValue(state);
   vi.mocked(tauriApi.mutateSkill).mockResolvedValue(state);
-  vi.mocked(tauriApi.renameSkill).mockResolvedValue(state);
+  vi.mocked(tauriApi.renameSkill).mockResolvedValue({
+    state,
+    renamed_skill_key: state.skills[0]?.skill_key ?? "skill",
+  });
   vi.mocked(tauriApi.openSkillPath).mockResolvedValue(undefined);
   vi.mocked(tauriApi.openSubagentPath).mockResolvedValue(undefined);
   vi.mocked(tauriApi.setSkillStarred).mockResolvedValue([]);
@@ -399,11 +396,7 @@ describe("App quiet redesign", () => {
       main_file_path: "/tmp/home/.claude/agents/agent-uno.md",
       main_file_exists: true,
       main_file_body_preview: "# Agent Uno",
-      main_file_body_preview_truncated: false,
-      subagent_dir_tree_preview: "agents/\n`-- agent-uno.md",
-      subagent_dir_tree_preview_truncated: false,
       last_modified_unix_seconds: 1_700_000_000,
-      target_statuses: [],
     });
 
     const user = userEvent.setup();
@@ -457,11 +450,7 @@ describe("App quiet redesign", () => {
       main_file_path: "/tmp/home/.claude/agents/agent-search.md",
       main_file_exists: true,
       main_file_body_preview: "# Agent Search",
-      main_file_body_preview_truncated: false,
-      subagent_dir_tree_preview: "agents/\n`-- agent-search.md",
-      subagent_dir_tree_preview_truncated: false,
       last_modified_unix_seconds: 1_700_000_000,
-      target_statuses: [],
     });
 
     const user = userEvent.setup();
@@ -866,11 +855,7 @@ describe("App quiet redesign", () => {
       main_file_path: subagent.canonical_source_path,
       main_file_exists: true,
       main_file_body_preview: "# Agent Archive",
-      main_file_body_preview_truncated: false,
-      subagent_dir_tree_preview: "agents/\n`-- agent-archive.md",
-      subagent_dir_tree_preview_truncated: false,
       last_modified_unix_seconds: 1_700_000_000,
-      target_statuses: [],
     });
 
     const user = userEvent.setup();
@@ -1112,6 +1097,72 @@ describe("App quiet redesign", () => {
         screen.getByRole("button", { name: "More actions" }),
       ).toBeEnabled();
     });
+  });
+
+  it("keeps the renamed skill selected using the backend-provided key", async () => {
+    const renamedSkill: SkillRecord = {
+      ...projectSkill,
+      id: "project-2",
+      name: "Renamed Skill",
+      canonical_source_path:
+        "/tmp/workspace/.claude/skills/server-generated-key",
+      skill_key: "server-generated-key",
+      target_paths: ["/tmp/workspace/.claude/skills/server-generated-key"],
+    };
+    const initialState = buildState([projectSkill]);
+    const renamedState = buildState([renamedSkill]);
+    setApiDefaults(initialState, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+      [renamedSkill.skill_key]: buildDetails(renamedSkill),
+    });
+    vi.mocked(tauriApi.renameSkill).mockResolvedValue({
+      state: renamedState,
+      renamed_skill_key: renamedSkill.skill_key,
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    const renameInput = screen.getByPlaceholderText("New skill title");
+    await user.clear(renameInput);
+    await user.type(renameInput, renamedSkill.name);
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+
+    await screen.findByRole("heading", { name: renamedSkill.name });
+    expect(tauriApi.renameSkill).toHaveBeenCalledWith(
+      projectSkill.skill_key,
+      renamedSkill.name,
+    );
+    await waitFor(() => {
+      expect(tauriApi.getSkillDetails).toHaveBeenLastCalledWith(
+        renamedSkill.skill_key,
+      );
+    });
+  });
+
+  it("shows backend rename errors", async () => {
+    const state = buildState([projectSkill]);
+    setApiDefaults(state, {
+      [projectSkill.skill_key]: buildDetails(projectSkill),
+    });
+    vi.mocked(tauriApi.renameSkill).mockRejectedValue(
+      new Error("rename requires a non-empty title that produces a valid key"),
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: projectSkill.name });
+
+    await user.clear(screen.getByPlaceholderText("New skill title"));
+    await user.type(screen.getByPlaceholderText("New skill title"), "___");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+
+    expect(
+      await screen.findByText(
+        "rename requires a non-empty title that produces a valid key",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows compact path and handles copy fallback", async () => {

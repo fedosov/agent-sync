@@ -28,9 +28,7 @@ function makeDetails(skillKey: string, name: string): SkillDetails {
     main_file_path: `/tmp/${skillKey}/SKILL.md`,
     main_file_exists: true,
     main_file_body_preview: null,
-    main_file_body_preview_truncated: false,
     skill_dir_tree_preview: null,
-    skill_dir_tree_preview_truncated: false,
     last_modified_unix_seconds: null,
   };
 }

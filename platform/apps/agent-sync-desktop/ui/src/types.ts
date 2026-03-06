@@ -198,10 +198,13 @@ export type SkillDetails = {
   main_file_path: string;
   main_file_exists: boolean;
   main_file_body_preview: string | null;
-  main_file_body_preview_truncated: boolean;
   skill_dir_tree_preview: string | null;
-  skill_dir_tree_preview_truncated: boolean;
   last_modified_unix_seconds: number | null;
+};
+
+export type RenameSkillResult = {
+  state: SyncState;
+  renamed_skill_key: string;
 };
 
 export type MutationCommand =
@@ -232,29 +235,10 @@ export type CatalogMutationRequest = {
   confirmed: boolean;
 };
 
-export type SubagentTargetKind =
-  | "symlink"
-  | "regular_file"
-  | "missing"
-  | "other";
-
-export type SubagentTargetStatus = {
-  path: string;
-  exists: boolean;
-  is_symlink: boolean;
-  symlink_target: string | null;
-  points_to_canonical: boolean;
-  kind: SubagentTargetKind;
-};
-
 export type SubagentDetails = {
   subagent: SubagentRecord;
   main_file_path: string;
   main_file_exists: boolean;
   main_file_body_preview: string | null;
-  main_file_body_preview_truncated: boolean;
-  subagent_dir_tree_preview: string | null;
-  subagent_dir_tree_preview_truncated: boolean;
   last_modified_unix_seconds: number | null;
-  target_statuses: SubagentTargetStatus[];
 };

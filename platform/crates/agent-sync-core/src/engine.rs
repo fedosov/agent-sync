@@ -123,6 +123,12 @@ pub struct SkillLocator {
 }
 
 #[derive(Debug, Clone)]
+pub struct RenameSkillResult {
+    pub state: SyncState,
+    pub renamed_skill_key: String,
+}
+
+#[derive(Debug, Clone)]
 struct SkillPackage {
     source_root: PathBuf,
     skill_key: String,
@@ -1211,7 +1217,7 @@ impl SyncEngine {
         &self,
         skill: &SkillRecord,
         new_title: &str,
-    ) -> Result<SyncState, SyncEngineError> {
+    ) -> Result<RenameSkillResult, SyncEngineError> {
         let new_key = normalized_skill_key(new_title);
         if new_key.is_empty() {
             return Err(SyncEngineError::RenameRequiresNonEmptyTitle);
@@ -1284,7 +1290,10 @@ impl SyncEngine {
             &skill_entry_id(skill.scope.as_str(), skill.workspace.as_deref(), &new_key),
             &next,
         )?;
-        Ok(next)
+        Ok(RenameSkillResult {
+            state: next,
+            renamed_skill_key: new_key,
+        })
     }
 
     fn run_core_sync(&self) -> Result<SyncCoreResult, SyncEngineError> {

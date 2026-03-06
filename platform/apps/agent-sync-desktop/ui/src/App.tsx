@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AgentLogoIcon } from "./components/catalog/AgentLogoIcon";
 import { SkillListPanel } from "./components/catalog/SkillListPanel";
 import { SubagentListPanel } from "./components/catalog/SubagentListPanel";
@@ -13,7 +13,6 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { useSkillDetails } from "./hooks/useSkillDetails";
-import { getSubagentDetails, setSkillStarred } from "./tauriApi";
 import { useEntityDetails } from "./hooks/useEntityDetails";
 import { useFavorites } from "./hooks/useFavorites";
 import { useSyncState, mcpSelectionKey } from "./hooks/useSyncState";
@@ -39,21 +38,23 @@ import { getVisibleMcpAgents } from "./lib/mcpAgents";
 import { compactPath } from "./lib/formatting";
 import { cn, errorMessage } from "./lib/utils";
 import {
+  deleteUnmanagedMcp,
+  fixSyncWarning,
+  getSubagentDetails,
   listDotagentsMcp,
   listDotagentsSkills,
+  migrateDotagents,
   mutateCatalogItem,
   mutateSkill,
   openSubagentPath,
   openSkillPath,
   renameSkill,
-  migrateDotagents,
-  fixSyncWarning,
   runDotagentsSync,
   setAllowFilesystemChanges,
+  setSkillStarred,
   setMcpServerEnabled,
-  deleteUnmanagedMcp,
 } from "./tauriApi";
-import { normalizeSkillKey, sortAndFilterSkills } from "./skillUtils";
+import { sortAndFilterSkills } from "./skillUtils";
 import type {
   CatalogMutationRequest,
   FocusKind,
@@ -69,6 +70,12 @@ type DeleteDialogState = {
 type OpenTargetMenu = "skill" | "subagent" | null;
 type ActionsMenuTarget = "skill" | "subagent" | "mcp" | null;
 type DotagentsProofStatus = "idle" | "running" | "ok" | "error";
+type AppActionOptions = {
+  clearError?: boolean;
+  onError?: (message: string) => void | Promise<void>;
+  skipIfBusy?: boolean;
+  withBusy?: boolean;
+};
 const DOTAGENTS_MIGRATION_REQUIRED =
   "migration required before strict dotagents sync";
 const FILESYSTEM_DISABLED_MESSAGE =
@@ -127,16 +134,6 @@ export function App() {
     [starredSkillIds],
   );
 
-  async function handleToggleSkillStar(skillId: string) {
-    const isCurrentlyStarred = starredSkillSet.has(skillId);
-    try {
-      const next = await setSkillStarred(skillId, !isCurrentlyStarred);
-      setStarredSkillIds(next);
-    } catch (invokeError) {
-      setError(errorMessage(invokeError));
-    }
-  }
-
   const { details, renameDraft, setRenameDraft } = useSkillDetails({
     selectedSkillKey,
     onError: setError,
@@ -168,30 +165,72 @@ export function App() {
     null,
   );
 
-  const handleAllowToggle = useCallback(
-    async (allow: boolean) => {
+  async function runAppAction(
+    action: () => Promise<void>,
+    {
+      clearError = true,
+      onError,
+      skipIfBusy = false,
+      withBusy = true,
+    }: AppActionOptions = {},
+  ): Promise<boolean> {
+    if (skipIfBusy && busy) {
+      return false;
+    }
+    if (withBusy) {
       setBusy(true);
+    }
+    if (clearError) {
       setError(null);
-      try {
-        const next = await setAllowFilesystemChanges(allow);
-        setRuntimeControls(next);
-        await refreshState({ preferredSkillKey: selectedSkillKey });
-      } catch (invokeError) {
-        setError(errorMessage(invokeError));
-        await loadRuntimeControls();
-      } finally {
+    }
+    try {
+      await action();
+      return true;
+    } catch (invokeError) {
+      const message = errorMessage(invokeError);
+      if (onError) {
+        await onError(message);
+      } else {
+        setError(message);
+      }
+      return false;
+    } finally {
+      if (withBusy) {
         setBusy(false);
       }
-    },
-    [
-      loadRuntimeControls,
-      refreshState,
-      selectedSkillKey,
-      setBusy,
-      setError,
-      setRuntimeControls,
-    ],
-  );
+    }
+  }
+
+  async function handleToggleSkillStar(skillId: string) {
+    const isCurrentlyStarred = starredSkillSet.has(skillId);
+    await runAppAction(
+      async () => {
+        const next = await setSkillStarred(skillId, !isCurrentlyStarred);
+        setStarredSkillIds(next);
+      },
+      { skipIfBusy: true, withBusy: false },
+    );
+  }
+
+  async function handleAllowToggle(allow: boolean) {
+    await runAppAction(
+      async () => {
+        const next = await setAllowFilesystemChanges(allow);
+        setRuntimeControls(next);
+        await refreshState({
+          preferredSkillKey: selectedSkillKey,
+          withBusy: false,
+        });
+      },
+      {
+        onError: async (message) => {
+          setError(message);
+          await loadRuntimeControls();
+        },
+        skipIfBusy: true,
+      },
+    );
+  }
 
   useEffect(() => {
     try {
@@ -354,42 +393,31 @@ export function App() {
       .slice(0, 8);
   }, [selectedAgentEntry]);
 
-  async function withErrorGuard(fn: () => Promise<void>): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      await fn();
-    } catch (invokeError) {
-      setError(errorMessage(invokeError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function withBusyGuard(fn: () => Promise<void>): Promise<void> {
-    if (busy) return;
-    await withErrorGuard(fn);
-  }
-
   async function executeSkillMutation(
     command: MutationCommand,
     skillKey: string,
   ) {
-    await withBusyGuard(async () => {
-      const next = await mutateSkill(command, skillKey);
-      applyState(next, skillKey);
-    });
+    await runAppAction(
+      async () => {
+        const next = await mutateSkill(command, skillKey);
+        applyState(next, skillKey);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function executeCatalogMutation(
     request: CatalogMutationRequest,
     preferredSkillKey?: string | null,
   ) {
-    await withBusyGuard(async () => {
-      const next = await mutateCatalogItem(request);
-      applySubagents(next.subagents);
-      applyState(next, preferredSkillKey ?? selectedSkillKey);
-    });
+    await runAppAction(
+      async () => {
+        const next = await mutateCatalogItem(request);
+        applySubagents(next.subagents);
+        applyState(next, preferredSkillKey ?? selectedSkillKey);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function handleRenameSkill(skillKey: string, rawTitle: string) {
@@ -399,16 +427,13 @@ export function App() {
       return;
     }
 
-    const normalizedKey = normalizeSkillKey(newTitle);
-    if (!normalizedKey) {
-      setError("Rename failed: title must produce non-empty key.");
-      return;
-    }
-
-    await withBusyGuard(async () => {
-      const next = await renameSkill(skillKey, newTitle);
-      applyState(next, normalizedKey);
-    });
+    await runAppAction(
+      async () => {
+        const result = await renameSkill(skillKey, newTitle);
+        applyState(result.state, result.renamed_skill_key);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function handleOpenSkillPath(
@@ -416,9 +441,12 @@ export function App() {
     target: "folder" | "file",
   ) {
     setOpenTargetMenu(null);
-    await withErrorGuard(async () => {
-      await openSkillPath(skillKey, target);
-    });
+    await runAppAction(
+      async () => {
+        await openSkillPath(skillKey, target);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function handleOpenSubagentPath(
@@ -426,9 +454,12 @@ export function App() {
     target: "folder" | "file",
   ) {
     setOpenTargetMenu(null);
-    await withErrorGuard(async () => {
-      await openSubagentPath(subagentId, target);
-    });
+    await runAppAction(
+      async () => {
+        await openSubagentPath(subagentId, target);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function handleSetMcpEnabled(
@@ -436,16 +467,29 @@ export function App() {
     agent: "codex" | "claude",
     enabled: boolean,
   ) {
-    await withErrorGuard(async () => {
-      const next = await setMcpServerEnabled(
-        server.server_key,
-        agent,
-        enabled,
-        server.scope,
-        server.workspace,
-      );
-      applyState(next, selectedSkillKey);
-    });
+    await runAppAction(
+      async () => {
+        const next = await setMcpServerEnabled(
+          server.server_key,
+          agent,
+          enabled,
+          server.scope,
+          server.workspace,
+        );
+        applyState(next, selectedSkillKey);
+      },
+      { skipIfBusy: true },
+    );
+  }
+
+  async function handleDeleteUnmanagedMcp(serverKey: string) {
+    await runAppAction(
+      async () => {
+        const next = await deleteUnmanagedMcp(serverKey);
+        applyState(next, selectedSkillKey);
+      },
+      { skipIfBusy: true },
+    );
   }
 
   async function copyPath(path: string, errorLabel: string) {
@@ -472,67 +516,56 @@ export function App() {
       setError(FILESYSTEM_DISABLED_MESSAGE);
       return;
     }
-    if (busy || fixingSyncWarning) {
+    if (fixingSyncWarning) {
       return;
     }
 
     setFixingSyncWarning(warning);
-    setError(null);
     try {
-      await fixSyncWarning(warning);
-      await refreshState({
-        preferredSkillKey: selectedSkillKey,
-        syncFirst: false,
-      });
-    } catch (invokeError) {
-      setError(errorMessage(invokeError));
+      await runAppAction(
+        async () => {
+          await fixSyncWarning(warning);
+          await refreshState({
+            preferredSkillKey: selectedSkillKey,
+            syncFirst: false,
+            withBusy: false,
+          });
+        },
+        { skipIfBusy: true },
+      );
     } finally {
       setFixingSyncWarning(null);
     }
   }
 
-  async function verifyDotagents(withBusy: boolean) {
-    if (withBusy) {
-      setBusy(true);
-    }
+  async function verifyDotagentsContracts() {
+    await runDotagentsSync("all");
+    const [skills, mcp] = await Promise.all([
+      listDotagentsSkills("all"),
+      listDotagentsMcp("all"),
+    ]);
+    setDotagentsProofStatus("ok");
+    setDotagentsProofSummary(
+      `Dotagents verified: skills=${skills.length}, mcp=${mcp.length}.`,
+    );
+    await refreshState({
+      preferredSkillKey: selectedSkillKey,
+      withBusy: false,
+    });
+  }
 
-    setError(null);
-    setDotagentsNeedsMigration(false);
-    setDotagentsProofStatus("running");
-    setDotagentsProofSummary("Verifying dotagents commands...");
-
-    try {
-      await runDotagentsSync("all");
-      const [skills, mcp] = await Promise.all([
-        listDotagentsSkills("all"),
-        listDotagentsMcp("all"),
-      ]);
-      setDotagentsProofStatus("ok");
-      setDotagentsProofSummary(
-        `Dotagents verified: skills=${skills.length}, mcp=${mcp.length}.`,
-      );
-      await refreshState({
-        preferredSkillKey: selectedSkillKey,
-        withBusy: false,
-      });
-    } catch (invokeError) {
-      const message = errorMessage(invokeError);
-      const migrationRequired = message
-        .toLowerCase()
-        .includes(DOTAGENTS_MIGRATION_REQUIRED);
-      setDotagentsNeedsMigration(migrationRequired);
-      setDotagentsProofStatus("error");
-      setDotagentsProofSummary(
-        migrationRequired
-          ? "Dotagents contracts are missing. Run Initialize dotagents."
-          : `Dotagents check failed: ${message}`,
-      );
-      setError(message);
-    } finally {
-      if (withBusy) {
-        setBusy(false);
-      }
-    }
+  function applyDotagentsVerificationError(message: string) {
+    const migrationRequired = message
+      .toLowerCase()
+      .includes(DOTAGENTS_MIGRATION_REQUIRED);
+    setDotagentsNeedsMigration(migrationRequired);
+    setDotagentsProofStatus("error");
+    setDotagentsProofSummary(
+      migrationRequired
+        ? "Dotagents contracts are missing. Run Initialize dotagents."
+        : `Dotagents check failed: ${message}`,
+    );
+    setError(message);
   }
 
   async function handleVerifyDotagents() {
@@ -541,7 +574,13 @@ export function App() {
       return;
     }
 
-    await verifyDotagents(true);
+    setDotagentsNeedsMigration(false);
+    setDotagentsProofStatus("running");
+    setDotagentsProofSummary("Verifying dotagents commands...");
+    await runAppAction(verifyDotagentsContracts, {
+      onError: applyDotagentsVerificationError,
+      skipIfBusy: true,
+    });
   }
 
   async function handleInitializeDotagents() {
@@ -550,23 +589,26 @@ export function App() {
       return;
     }
 
-    setBusy(true);
-    setError(null);
+    setDotagentsNeedsMigration(false);
     setDotagentsProofStatus("running");
     setDotagentsProofSummary("Initializing dotagents contracts...");
-
-    try {
-      await migrateDotagents("all");
-      setDotagentsNeedsMigration(false);
-      await verifyDotagents(false);
-    } catch (invokeError) {
-      const message = errorMessage(invokeError);
-      setDotagentsProofStatus("error");
-      setDotagentsProofSummary(`Dotagents initialization failed: ${message}`);
-      setError(message);
-    } finally {
-      setBusy(false);
-    }
+    await runAppAction(
+      async () => {
+        await migrateDotagents("all");
+        setDotagentsProofSummary("Verifying dotagents commands...");
+        await verifyDotagentsContracts();
+      },
+      {
+        onError: (message) => {
+          setDotagentsProofStatus("error");
+          setDotagentsProofSummary(
+            `Dotagents initialization failed: ${message}`,
+          );
+          setError(message);
+        },
+        skipIfBusy: true,
+      },
+    );
   }
 
   function handleCatalogTabChange(next: FocusKind) {
@@ -1237,12 +1279,8 @@ export function App() {
                     setDeleteDialog({
                       request: null,
                       label: mcpDeleteLabel(selectedMcpServer),
-                      onConfirmOverride: async () => {
-                        await withBusyGuard(async () => {
-                          const next = await deleteUnmanagedMcp(serverKey);
-                          applyState(next, selectedSkillKey);
-                        });
-                      },
+                      onConfirmOverride: async () =>
+                        handleDeleteUnmanagedMcp(serverKey),
                     });
                   } else {
                     setDeleteDialog({

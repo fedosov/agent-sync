@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatUnixTime } from "./lib/formatting";
-import {
-  normalizeSkillKey,
-  pickSelectedSkillKey,
-  sortAndFilterSkills,
-} from "./skillUtils";
+import { pickSelectedSkillKey, sortAndFilterSkills } from "./skillUtils";
 import type { SkillRecord } from "./types";
 
 const skills: SkillRecord[] = [
@@ -42,17 +38,6 @@ const skills: SkillRecord[] = [
     skill_key: "old",
   },
 ];
-
-describe("normalizeSkillKey", () => {
-  it("normalizes mixed symbols", () => {
-    expect(normalizeSkillKey("  New Skill ++ Name  ")).toBe("new-skill-name");
-  });
-
-  it("returns empty for invalid title", () => {
-    expect(normalizeSkillKey("___")).toBe("");
-    expect(normalizeSkillKey("   ")).toBe("");
-  });
-});
 
 describe("formatUnixTime", () => {
   it("returns dash for null", () => {

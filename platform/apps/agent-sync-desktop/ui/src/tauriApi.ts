@@ -9,6 +9,7 @@ import type {
   MutationCommand,
   McpServerRecord,
   PlatformContext,
+  RenameSkillResult,
   RuntimeControls,
   SubagentDetails,
   SubagentRecord,
@@ -244,8 +245,8 @@ export async function mutateCatalogItem(
 export async function renameSkill(
   skillKey: string,
   newTitle: string,
-): Promise<SyncState> {
-  return invoke<SyncState>("rename_skill", {
+): Promise<RenameSkillResult> {
+  return invoke<RenameSkillResult>("rename_skill", {
     skillKey,
     newTitle,
   });

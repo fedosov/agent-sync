@@ -208,8 +208,9 @@ These mutations are available only through the desktop app UI, not the strict CL
 - `Make global`: promote active project skill to global scope.
 - `Rename`: normalize skill key from title and move path safely.
 - `Delete`: remove active skill (to trash) or remove archived bundle.
-
-`subagents` in current phase are `sync + inspect` (read-only lifecycle).
+- `Subagent archive`: move an active subagent into runtime archives.
+- `Subagent restore`: restore an archived subagent to active state.
+- `Subagent delete`: remove an active or archived subagent bundle.
 
 ## Repository Layout
 

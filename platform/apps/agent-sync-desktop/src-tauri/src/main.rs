@@ -80,9 +80,7 @@ pub(crate) struct SkillDetails {
     pub(crate) main_file_path: String,
     pub(crate) main_file_exists: bool,
     pub(crate) main_file_body_preview: Option<String>,
-    pub(crate) main_file_body_preview_truncated: bool,
     pub(crate) skill_dir_tree_preview: Option<String>,
-    pub(crate) skill_dir_tree_preview_truncated: bool,
     pub(crate) last_modified_unix_seconds: Option<u64>,
 }
 
@@ -92,30 +90,13 @@ pub(crate) struct SubagentDetails {
     pub(crate) main_file_path: String,
     pub(crate) main_file_exists: bool,
     pub(crate) main_file_body_preview: Option<String>,
-    pub(crate) main_file_body_preview_truncated: bool,
-    pub(crate) subagent_dir_tree_preview: Option<String>,
-    pub(crate) subagent_dir_tree_preview_truncated: bool,
     pub(crate) last_modified_unix_seconds: Option<u64>,
-    pub(crate) target_statuses: Vec<SubagentTargetStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SubagentTargetKind {
-    Symlink,
-    RegularFile,
-    Missing,
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct SubagentTargetStatus {
-    path: String,
-    exists: bool,
-    is_symlink: bool,
-    symlink_target: Option<String>,
-    points_to_canonical: bool,
-    kind: SubagentTargetKind,
+pub(crate) struct RenameSkillResponse {
+    pub(crate) state: SyncState,
+    pub(crate) renamed_skill_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -589,96 +570,6 @@ pub(crate) fn read_skill_dir_tree(root: &Path, max_entries: usize) -> (Option<St
     (Some(lines.join("\n")), truncated)
 }
 
-pub(crate) fn collect_subagent_target_statuses(
-    target_paths: &[String],
-    canonical_parent: Option<&Path>,
-    canonical_source: Option<&Path>,
-) -> Vec<SubagentTargetStatus> {
-    target_paths
-        .iter()
-        .map(|path| build_subagent_target_status(path, canonical_parent, canonical_source))
-        .collect()
-}
-
-pub(crate) fn build_subagent_target_status(
-    path: &str,
-    canonical_parent: Option<&Path>,
-    canonical_source: Option<&Path>,
-) -> SubagentTargetStatus {
-    let target_path = PathBuf::from(path);
-    let Ok(metadata) = fs::symlink_metadata(&target_path) else {
-        return SubagentTargetStatus {
-            path: path.to_owned(),
-            exists: false,
-            is_symlink: false,
-            symlink_target: None,
-            points_to_canonical: false,
-            kind: SubagentTargetKind::Missing,
-        };
-    };
-
-    let file_type = metadata.file_type();
-    let is_symlink = file_type.is_symlink();
-
-    if is_symlink {
-        let raw_link = fs::read_link(&target_path).ok();
-        let resolved_link = raw_link.as_ref().map(|link| {
-            if link.is_absolute() {
-                link.clone()
-            } else {
-                target_path
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_default()
-                    .join(link)
-            }
-        });
-        let points_to_canonical = resolved_link
-            .as_deref()
-            .and_then(|resolved| canonicalize_with_base(resolved, canonical_parent))
-            .zip(canonical_source)
-            .map(|(resolved, canonical)| resolved == canonical)
-            .unwrap_or(false);
-
-        return SubagentTargetStatus {
-            path: path.to_owned(),
-            exists: true,
-            is_symlink: true,
-            symlink_target: raw_link.map(|link| link.display().to_string()),
-            points_to_canonical,
-            kind: SubagentTargetKind::Symlink,
-        };
-    }
-
-    if file_type.is_file() {
-        return SubagentTargetStatus {
-            path: path.to_owned(),
-            exists: true,
-            is_symlink: false,
-            symlink_target: None,
-            points_to_canonical: false,
-            kind: SubagentTargetKind::RegularFile,
-        };
-    }
-
-    SubagentTargetStatus {
-        path: path.to_owned(),
-        exists: true,
-        is_symlink: false,
-        symlink_target: None,
-        points_to_canonical: false,
-        kind: SubagentTargetKind::Other,
-    }
-}
-
-fn canonicalize_with_base(path: &Path, base_dir: Option<&Path>) -> Option<PathBuf> {
-    fs::canonicalize(path).ok().or_else(|| {
-        base_dir
-            .map(|base| base.join(path))
-            .and_then(|joined| fs::canonicalize(joined).ok())
-    })
-}
-
 fn render_tree_entries(
     dir: &Path,
     prefix: &str,
@@ -851,16 +742,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_platform_context, build_subagent_target_status, enable_auto_watch_and_initial_sync,
-        ensure_write_allowed, normalize_os_name, read_skill_dir_tree,
-        set_allow_filesystem_changes_inner, set_allow_filesystem_changes_inner_with,
-        stop_auto_watch, validate_catalog_mutation_target, CatalogMutationActionPayload,
-        CatalogMutationRequestPayload, CatalogMutationTargetPayload, RuntimeState,
-        SubagentTargetKind,
+        build_platform_context, enable_auto_watch_and_initial_sync, ensure_write_allowed,
+        normalize_os_name, read_skill_dir_tree, set_allow_filesystem_changes_inner,
+        set_allow_filesystem_changes_inner_with, stop_auto_watch, validate_catalog_mutation_target,
+        CatalogMutationActionPayload, CatalogMutationRequestPayload, CatalogMutationTargetPayload,
+        RenameSkillResponse, RuntimeState, SkillDetails, SubagentDetails,
     };
     use agent_sync_core::{
-        AuditEventStatus, CatalogMutationAction, SyncEngine, SyncEngineEnvironment, SyncPaths,
-        SyncPreferencesStore, SyncStateStore,
+        AuditEventStatus, CatalogMutationAction, SkillLifecycleStatus, SkillRecord, SubagentRecord,
+        SyncEngine, SyncEngineEnvironment, SyncPaths, SyncPreferencesStore, SyncState,
+        SyncStateStore,
     };
     use std::fs;
     use std::path::Path;
@@ -944,72 +835,49 @@ mod tests {
     }
 
     #[test]
-    fn build_subagent_target_status_marks_missing_path() {
-        let status = build_subagent_target_status("/tmp/does-not-exist/subagent.md", None, None);
-        assert_eq!(status.kind, SubagentTargetKind::Missing);
-        assert!(!status.exists);
-        assert!(!status.is_symlink);
-        assert_eq!(status.symlink_target, None);
-        assert!(!status.points_to_canonical);
+    fn rename_skill_response_serializes_with_state_and_backend_key() {
+        let payload = RenameSkillResponse {
+            state: SyncState::default(),
+            renamed_skill_key: String::from("renamed-skill"),
+        };
+        let json = serde_json::to_value(payload).expect("serialize rename payload");
+
+        assert_eq!(json["renamed_skill_key"], "renamed-skill");
+        assert!(json.get("state").is_some());
     }
 
     #[test]
-    fn build_subagent_target_status_marks_regular_file() {
-        let dir = tempdir().expect("create tempdir");
-        let target_file = dir.path().join("subagent.md");
-        fs::write(&target_file, "hello").expect("write file");
+    fn detail_payloads_omit_trimmed_fields() {
+        let skill_details = SkillDetails {
+            skill: sample_skill_record(),
+            main_file_path: String::from("/tmp/alpha/SKILL.md"),
+            main_file_exists: true,
+            main_file_body_preview: Some(String::from("# Preview")),
+            skill_dir_tree_preview: Some(String::from("alpha/\n`-- SKILL.md")),
+            last_modified_unix_seconds: Some(1_700_000_000),
+        };
+        let subagent_details = SubagentDetails {
+            subagent: sample_subagent_record(),
+            main_file_path: String::from("/tmp/reviewer.md"),
+            main_file_exists: true,
+            main_file_body_preview: Some(String::from("# Reviewer")),
+            last_modified_unix_seconds: Some(1_700_000_000),
+        };
 
-        let status = build_subagent_target_status(&target_file.display().to_string(), None, None);
-        assert_eq!(status.kind, SubagentTargetKind::RegularFile);
-        assert!(status.exists);
-        assert!(!status.is_symlink);
-        assert_eq!(status.symlink_target, None);
-        assert!(!status.points_to_canonical);
-    }
+        let skill_json = serde_json::to_value(skill_details).expect("serialize skill details");
+        let subagent_json =
+            serde_json::to_value(subagent_details).expect("serialize subagent details");
 
-    #[cfg(unix)]
-    #[test]
-    fn build_subagent_target_status_marks_symlink_and_canonical_match() {
-        use std::os::unix::fs as unix_fs;
-
-        let dir = tempdir().expect("create tempdir");
-        let canonical = dir.path().join("canonical.md");
-        fs::write(&canonical, "hello").expect("write canonical");
-
-        let links_dir = dir.path().join("links");
-        fs::create_dir_all(&links_dir).expect("create links dir");
-        let link_path = links_dir.join("subagent.md");
-        unix_fs::symlink("../canonical.md", &link_path).expect("create symlink");
-
-        let canonical_path = fs::canonicalize(&canonical).expect("canonicalize");
-        let status = build_subagent_target_status(
-            &link_path.display().to_string(),
-            None,
-            Some(canonical_path.as_path()),
-        );
-
-        assert_eq!(status.kind, SubagentTargetKind::Symlink);
-        assert!(status.exists);
-        assert!(status.is_symlink);
-        assert_eq!(status.symlink_target, Some(String::from("../canonical.md")));
-        assert!(status.points_to_canonical);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn build_subagent_target_status_handles_broken_symlink() {
-        use std::os::unix::fs as unix_fs;
-
-        let dir = tempdir().expect("create tempdir");
-        let link_path = dir.path().join("broken.md");
-        unix_fs::symlink("missing.md", &link_path).expect("create broken symlink");
-
-        let status = build_subagent_target_status(&link_path.display().to_string(), None, None);
-        assert_eq!(status.kind, SubagentTargetKind::Symlink);
-        assert!(status.exists);
-        assert!(status.is_symlink);
-        assert_eq!(status.symlink_target, Some(String::from("missing.md")));
-        assert!(!status.points_to_canonical);
+        assert!(skill_json.get("main_file_body_preview_truncated").is_none());
+        assert!(skill_json.get("skill_dir_tree_preview_truncated").is_none());
+        assert!(subagent_json
+            .get("main_file_body_preview_truncated")
+            .is_none());
+        assert!(subagent_json.get("subagent_dir_tree_preview").is_none());
+        assert!(subagent_json
+            .get("subagent_dir_tree_preview_truncated")
+            .is_none());
+        assert!(subagent_json.get("target_statuses").is_none());
     }
 
     #[test]
@@ -1121,6 +989,56 @@ mod tests {
             CatalogMutationAction::from(payload.action),
             CatalogMutationAction::MakeGlobal
         );
+    }
+
+    fn sample_skill_record() -> SkillRecord {
+        SkillRecord {
+            id: String::from("skill-1"),
+            name: String::from("Skill"),
+            scope: String::from("global"),
+            workspace: None,
+            canonical_source_path: String::from("/tmp/alpha"),
+            target_paths: vec![String::from("/tmp/alpha")],
+            exists: true,
+            is_symlink_canonical: false,
+            package_type: String::from("dir"),
+            skill_key: String::from("alpha"),
+            symlink_target: String::from("/tmp/alpha"),
+            source: None,
+            commit: None,
+            install_status: None,
+            wildcard_source: None,
+            status: SkillLifecycleStatus::Active,
+            archived_at: None,
+            archived_bundle_path: None,
+            archived_original_scope: None,
+            archived_original_workspace: None,
+        }
+    }
+
+    fn sample_subagent_record() -> SubagentRecord {
+        SubagentRecord {
+            id: String::from("subagent-1"),
+            name: String::from("Reviewer"),
+            description: String::from("Review code"),
+            scope: String::from("global"),
+            workspace: None,
+            canonical_source_path: String::from("/tmp/reviewer.md"),
+            target_paths: vec![String::from("/tmp/reviewer.md")],
+            exists: true,
+            is_symlink_canonical: false,
+            package_type: String::from("file"),
+            subagent_key: String::from("reviewer"),
+            symlink_target: String::from("/tmp/reviewer.md"),
+            model: None,
+            tools: Vec::new(),
+            codex_tools_ignored: false,
+            status: SkillLifecycleStatus::Active,
+            archived_at: None,
+            archived_bundle_path: None,
+            archived_original_scope: None,
+            archived_original_workspace: None,
+        }
     }
 
     #[test]

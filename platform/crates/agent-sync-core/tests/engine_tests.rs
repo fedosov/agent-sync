@@ -534,7 +534,9 @@ fn rename_skill_updates_title_and_key() {
         })
         .expect("skill exists");
 
-    let state = engine.rename(&skill, "New Name").expect("rename");
+    let result = engine.rename(&skill, "New Name").expect("rename");
+    assert_eq!(result.renamed_skill_key, "new-name");
+    let state = result.state;
     assert!(state.skills.iter().any(|item| item.skill_key == "new-name"));
 
     let skill_file = engine
@@ -783,7 +785,9 @@ fn starred_skill_is_preserved_across_rename() {
         .set_skill_starred(&skill.id, true)
         .expect("set starred skill");
 
-    let state = engine.rename(&skill, "New Name").expect("rename");
+    let result = engine.rename(&skill, "New Name").expect("rename");
+    assert_eq!(result.renamed_skill_key, "new-name");
+    let state = result.state;
     let renamed = state
         .skills
         .iter()

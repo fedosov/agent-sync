@@ -19,7 +19,9 @@ pub use agents_context::{
     AgentsContextReport, AgentsContextTotals,
 };
 pub use audit_store::{SyncAuditStore, DEFAULT_AUDIT_LOG_LIMIT};
-pub use engine::{DotagentsScope, ScopeFilter, SkillLocator, SyncEngine, SyncEngineEnvironment};
+pub use engine::{
+    DotagentsScope, RenameSkillResult, ScopeFilter, SkillLocator, SyncEngine, SyncEngineEnvironment,
+};
 pub use error::{load_json_or_default, render_json_pretty, write_json_pretty, SyncEngineError};
 pub use mcp_registry::{McpAgent, UnmanagedClaudeMcpCandidate, UnmanagedClaudeMcpFixReport};
 pub use models::{
