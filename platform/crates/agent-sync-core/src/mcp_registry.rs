@@ -1458,7 +1458,12 @@ impl McpRegistry {
 
             let project_codex_path = workspace.join(".codex").join("config.toml");
             if project_codex_path.exists() {
-                match read_toml_servers(&project_codex_path) {
+                let project_codex_raw = fs::read_to_string(&project_codex_path)
+                    .map(|raw| strip_managed_blocks(&raw, &CODEX_MARKER_PAIRS));
+                match project_codex_raw
+                    .map_err(|e| e.to_string())
+                    .and_then(|unmanaged| read_toml_servers_from_str(&unmanaged))
+                {
                     Ok(items) => {
                         for (server_key, definition, enabled) in items {
                             let catalog_id = make_catalog_id(
@@ -1540,7 +1545,20 @@ impl McpRegistry {
 
     fn load_codex_global_discovered(&self, warnings: &mut Vec<String>) -> Vec<Discovered> {
         let path = self.codex_config_path();
-        match read_toml_servers(&path) {
+        let raw = match fs::read_to_string(&path) {
+            Ok(v) => v,
+            Err(_) => {
+                if path.exists() {
+                    warnings.push(format!(
+                        "Failed to read Codex MCP config {}",
+                        path.display()
+                    ));
+                }
+                return Vec::new();
+            }
+        };
+        let unmanaged_only = strip_managed_blocks(&raw, &CODEX_MARKER_PAIRS);
+        match read_toml_servers_from_str(&unmanaged_only) {
             Ok(items) => items
                 .into_iter()
                 .map(|(server_key, definition, enabled)| Discovered {
@@ -1988,22 +2006,23 @@ impl McpRegistry {
             if !entry.enabled {
                 if has_unmanaged_duplicate {
                     unmanaged_text = text_remove_codex_server_section(&unmanaged_text, key);
-                    warnings.push(format!(
-                        "Auto-cleaned unmanaged Codex MCP '{}' because managed entry is disabled in {}",
-                        key,
-                        path.display()
-                    ));
                 }
                 filtered.insert(key.clone(), entry.clone());
                 continue;
             }
 
             if has_unmanaged_duplicate {
-                warnings.push(format!(
-                    "Skipped managed Codex MCP '{}' because unmanaged entry already exists in {}",
-                    key,
-                    path.display()
-                ));
+                let definitions_match = unmanaged_table
+                    .as_ref()
+                    .map(|table| unmanaged_codex_definition_matches(table, key, &entry.definition))
+                    .unwrap_or(false);
+                if !definitions_match {
+                    warnings.push(format!(
+                        "Skipped managed Codex MCP '{}' because unmanaged entry already exists in {}",
+                        key,
+                        path.display()
+                    ));
+                }
                 continue;
             }
             filtered.insert(key.clone(), entry.clone());
@@ -2031,11 +2050,6 @@ impl McpRegistry {
                     .unwrap_or_else(|| text_contains_codex_server(&unmanaged_text, &key));
                 if still_in_unmanaged {
                     safe.remove(&key);
-                    warnings.push(format!(
-                        "Defensive dedup: removed managed Codex MCP '{}' that duplicates unmanaged entry in {}",
-                        key,
-                        path.display()
-                    ));
                 }
             }
             safe
@@ -2052,11 +2066,6 @@ impl McpRegistry {
             for key in &managed_only_keys {
                 if text_contains_codex_server(&unmanaged_text, key) {
                     safe_filtered.remove(key);
-                    warnings.push(format!(
-                        "TOML validation fix: removed duplicate managed MCP '{}' in {}",
-                        key,
-                        path.display()
-                    ));
                 }
             }
             if safe_filtered.len() != filtered.len() {
@@ -3117,11 +3126,6 @@ fn read_claude_user_servers(path: &Path) -> Result<ClaudeUserServers, String> {
     Ok(ClaudeUserServers { global, projects })
 }
 
-fn read_toml_servers(path: &Path) -> Result<Vec<(String, McpDefinition, bool)>, String> {
-    let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    read_toml_servers_from_str(&raw)
-}
-
 fn read_toml_servers_from_str(raw: &str) -> Result<Vec<(String, McpDefinition, bool)>, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -3293,6 +3297,20 @@ fn unmanaged_codex_contains_server(table: &toml::Table, server_key: &str) -> boo
         .and_then(toml::Value::as_table)
         .and_then(|servers| servers.get(server_key))
         .is_some()
+}
+
+fn unmanaged_codex_definition_matches(
+    table: &toml::Table,
+    server_key: &str,
+    expected: &McpDefinition,
+) -> bool {
+    table
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .and_then(|servers| servers.get(server_key))
+        .and_then(toml::Value::as_table)
+        .map(|server_table| definition_from_toml_table(server_table) == *expected)
+        .unwrap_or(false)
 }
 
 fn definition_from_toml_table(table: &toml::value::Table) -> McpDefinition {
@@ -3886,9 +3904,11 @@ API_KEY = "${API_KEY}"
             .apply_codex_catalog_path(&codex_path, &entries, true, &mut warnings)
             .expect("apply codex");
         assert_eq!(keys, vec![String::from("exa")]);
-        assert!(warnings
-            .iter()
-            .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+        // Auto-clean is informational, not a warning — warnings should be empty
+        assert!(
+            warnings.is_empty(),
+            "auto-clean should not produce warnings, got: {warnings:?}"
+        );
 
         let codex_raw = std::fs::read_to_string(&codex_path).expect("read codex");
         assert_eq!(count_occurrences(&codex_raw, "[mcp_servers.exa]"), 1);

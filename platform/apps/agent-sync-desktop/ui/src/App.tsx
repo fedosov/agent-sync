@@ -469,7 +469,7 @@ export function App() {
       await fixSyncWarning(warning);
       await refreshState({
         preferredSkillKey: selectedSkillKey,
-        syncFirst: true,
+        syncFirst: false,
       });
     } catch (invokeError) {
       setError(errorMessage(invokeError));

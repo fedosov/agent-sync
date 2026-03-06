@@ -2349,11 +2349,16 @@ enabled = true
     );
 
     let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
-    assert!(state
-        .sync
-        .warnings
-        .iter()
-        .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+    // Auto-clean is informational, not a warning
+    assert!(
+        !state
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("Auto-cleaned")),
+        "auto-clean should not produce warnings, got: {:?}",
+        state.sync.warnings
+    );
     assert!(!state
         .sync
         .warnings
@@ -2406,11 +2411,16 @@ project = true
     );
 
     let state = engine.run_sync(SyncTrigger::Manual).expect("sync");
-    assert!(state
-        .sync
-        .warnings
-        .iter()
-        .any(|item| item.contains("Auto-cleaned unmanaged Codex MCP 'exa'")));
+    // Auto-clean is informational, not a warning
+    assert!(
+        !state
+            .sync
+            .warnings
+            .iter()
+            .any(|item| item.contains("Auto-cleaned")),
+        "auto-clean should not produce warnings, got: {:?}",
+        state.sync.warnings
+    );
 
     let codex_raw = fs::read_to_string(project_codex).expect("read project codex");
     assert_eq!(count_occurrences(&codex_raw, "[mcp_servers.exa]"), 1);
