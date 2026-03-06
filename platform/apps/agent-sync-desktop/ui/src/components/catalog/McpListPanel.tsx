@@ -14,9 +14,9 @@ type McpListPanelProps = {
   selectedMcpKey: string | null;
   favorites: Set<string>;
   emptyText: string;
-  expandedProjectGroups: Record<string, boolean>;
+  expandedProjectGroups: Record<string, boolean | undefined>;
   onSelect: (mcpKey: string) => void;
-  onToggleProjectGroup: (groupKey: string) => void;
+  onToggleProjectGroup: (groupKey: string, currentExpanded: boolean) => void;
   onCloseMenus: () => void;
 };
 

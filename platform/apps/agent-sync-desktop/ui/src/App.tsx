@@ -67,7 +67,10 @@ type DeleteDialogState = {
 type OpenTargetMenu = "skill" | "subagent" | null;
 type ActionsMenuTarget = "skill" | "subagent" | "mcp" | null;
 type DotagentsProofStatus = "idle" | "running" | "ok" | "error";
-type CatalogProjectGroupState = Record<FocusKind, Record<string, boolean>>;
+type CatalogProjectGroupState = Record<
+  FocusKind,
+  Record<string, boolean | undefined>
+>;
 type AppActionOptions = {
   clearError?: boolean;
   onError?: (message: string) => void | Promise<void>;
@@ -628,12 +631,16 @@ export function App() {
     setOpenTargetMenu(null);
   }
 
-  function toggleProjectGroup(kind: FocusKind, groupKey: string) {
+  function toggleProjectGroup(
+    kind: FocusKind,
+    groupKey: string,
+    currentExpanded: boolean,
+  ) {
     setExpandedProjectGroups((previous) => ({
       ...previous,
       [kind]: {
         ...previous[kind],
-        [groupKey]: !(previous[kind][groupKey] ?? false),
+        [groupKey]: !currentExpanded,
       },
     }));
   }
@@ -977,8 +984,8 @@ export function App() {
                       setSelectedSkillKey(skillKey);
                       closeMenus();
                     }}
-                    onToggleProjectGroup={(groupKey) =>
-                      toggleProjectGroup("skills", groupKey)
+                    onToggleProjectGroup={(groupKey, currentExpanded) =>
+                      toggleProjectGroup("skills", groupKey, currentExpanded)
                     }
                     onCloseMenus={closeMenus}
                   />
@@ -996,8 +1003,8 @@ export function App() {
                       setSelectedSubagentId(subagentId);
                       closeMenus();
                     }}
-                    onToggleProjectGroup={(groupKey) =>
-                      toggleProjectGroup("subagents", groupKey)
+                    onToggleProjectGroup={(groupKey, currentExpanded) =>
+                      toggleProjectGroup("subagents", groupKey, currentExpanded)
                     }
                     onCloseMenus={closeMenus}
                   />
@@ -1015,8 +1022,8 @@ export function App() {
                       setSelectedMcpKey(key);
                       closeMenus();
                     }}
-                    onToggleProjectGroup={(groupKey) =>
-                      toggleProjectGroup("mcp", groupKey)
+                    onToggleProjectGroup={(groupKey, currentExpanded) =>
+                      toggleProjectGroup("mcp", groupKey, currentExpanded)
                     }
                     onCloseMenus={closeMenus}
                   />
@@ -1034,8 +1041,8 @@ export function App() {
                       setSelectedAgentEntryId(entryId);
                       closeMenus();
                     }}
-                    onToggleProjectGroup={(groupKey) =>
-                      toggleProjectGroup("agents", groupKey)
+                    onToggleProjectGroup={(groupKey, currentExpanded) =>
+                      toggleProjectGroup("agents", groupKey, currentExpanded)
                     }
                     onCloseMenus={closeMenus}
                   />

@@ -11,9 +11,9 @@ type AgentsListPanelProps = {
   selectedAgentEntryId: string | null;
   favorites: Set<string>;
   emptyText: string;
-  expandedProjectGroups: Record<string, boolean>;
+  expandedProjectGroups: Record<string, boolean | undefined>;
   onSelect: (entryId: string) => void;
-  onToggleProjectGroup: (groupKey: string) => void;
+  onToggleProjectGroup: (groupKey: string, currentExpanded: boolean) => void;
   onCloseMenus: () => void;
 };
 

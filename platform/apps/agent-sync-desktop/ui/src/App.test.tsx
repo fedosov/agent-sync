@@ -1040,6 +1040,41 @@ describe("App quiet redesign", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("user collapse overrides auto-expand for selected item's group", async () => {
+    const globalOvSkill = buildSkillRecord({
+      id: "skill-global-ov",
+      name: "Global Override",
+      skill_key: "global-override",
+      scope: "global",
+      workspace: null,
+    });
+    const workspace = "/tmp/projects/override-ws";
+    const projectOvSkill = buildSkillRecord({
+      id: "skill-project-ov",
+      name: "Project Override Skill",
+      skill_key: "project-override-skill",
+      scope: "project",
+      workspace,
+    });
+    const state = buildState([projectOvSkill, globalOvSkill]);
+    setApiDefaults(state, {
+      [globalOvSkill.skill_key]: buildDetails(globalOvSkill),
+      [projectOvSkill.skill_key]: buildDetails(projectOvSkill),
+    });
+
+    const user = userEvent.setup();
+    const app = render(<App />);
+    const appScope = within(app.container);
+    await appScope.findByRole("heading", { name: projectOvSkill.name });
+    const catalogPanel = getActiveCatalogPanel(app.container);
+
+    const projectGroup = getProjectGroupButtonByPath(catalogPanel, workspace);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(projectGroup);
+    expect(projectGroup).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("groups subagents with Global first and auto-expands matching project workspaces on search", async () => {
     const globalSkill = buildSkillRecord({
       id: "skill-subagents-host",
