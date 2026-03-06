@@ -11,11 +11,13 @@ type McpDetailsPanelProps = {
   server: McpServerRecord;
   warnings: string[];
   busy: boolean;
+  fixingWarning: string | null;
   isFavorite: boolean;
   onToggleFavorite: () => void;
   actionsMenuOpen: boolean;
   onToggleActionsMenu: () => void;
   onSetEnabled: (agent: "codex" | "claude", enabled: boolean) => void;
+  onFixWarning: (warning: string) => void;
   onArchive: () => void;
   onMakeGlobal: () => void;
   onRestore: () => void;
@@ -26,11 +28,13 @@ export function McpDetailsPanel({
   server,
   warnings,
   busy,
+  fixingWarning,
   isFavorite,
   onToggleFavorite,
   actionsMenuOpen,
   onToggleActionsMenu,
   onSetEnabled,
+  onFixWarning,
   onArchive,
   onMakeGlobal,
   onRestore,
@@ -130,10 +134,22 @@ export function McpDetailsPanel({
       </CardHeader>
       <CardContent className="space-y-3 p-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         {status === "unmanaged" ? (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-foreground">
-            This MCP server exists in agent config files but is not in the
-            managed catalog. Delete it to clean up, or use &quot;Fix&quot; on
-            the sync warning to adopt it.
+          <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-foreground">
+            <span>
+              This MCP server exists in agent config files but is not in the
+              managed catalog. Delete it to clean up, or fix to adopt it.
+            </span>
+            {warnings.length > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || fixingWarning !== null}
+                onClick={() => onFixWarning(warnings[0])}
+                className="shrink-0 border-amber-500/50 text-xs hover:bg-amber-500/20"
+              >
+                {fixingWarning ? "Fixing…" : "Fix"}
+              </Button>
+            ) : null}
           </div>
         ) : null}
         <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
@@ -260,8 +276,20 @@ export function McpDetailsPanel({
           ) : (
             <ul className="space-y-1 text-xs">
               {warnings.map((warning) => (
-                <li key={warning} className="rounded-md bg-muted/20 p-2">
-                  {warning}
+                <li
+                  key={warning}
+                  className="flex items-start justify-between gap-2 rounded-md bg-muted/20 p-2"
+                >
+                  <span>{warning}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy || fixingWarning !== null}
+                    onClick={() => onFixWarning(warning)}
+                    className="shrink-0 text-xs"
+                  >
+                    {fixingWarning === warning ? "Fixing…" : "Fix"}
+                  </Button>
                 </li>
               ))}
             </ul>

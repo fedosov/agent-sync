@@ -1192,6 +1192,7 @@ export function App() {
                 server={selectedMcpServer}
                 warnings={selectedMcpWarnings}
                 busy={busy}
+                fixingWarning={fixingSyncWarning}
                 isFavorite={favorites.mcp.has(selectedMcpKey!)}
                 onToggleFavorite={() => toggleFavorite("mcp", selectedMcpKey!)}
                 actionsMenuOpen={actionsMenuTarget === "mcp"}
@@ -1204,6 +1205,7 @@ export function App() {
                 onSetEnabled={(agent, enabled) =>
                   void handleSetMcpEnabled(selectedMcpServer, agent, enabled)
                 }
+                onFixWarning={(warning) => void handleFixSyncWarning(warning)}
                 onArchive={() => {
                   setActionsMenuTarget(null);
                   void executeCatalogMutation({
