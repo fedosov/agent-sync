@@ -62,44 +62,67 @@ export function warningMentionsServer(
   );
 }
 
+interface WarningFixPattern {
+  startsWith: string;
+  includes?: string;
+  endsWith?: string;
+  summary: string;
+}
+
+const WARNING_FIX_PATTERNS: WarningFixPattern[] = [
+  {
+    startsWith: "Broken unmanaged Claude MCP '",
+    summary: "Will remove broken unmanaged Claude entry",
+  },
+  {
+    startsWith: "MCP server '",
+    includes: " exists in ",
+    endsWith: " but is unmanaged in central catalog",
+    summary: "Will add server to managed MCP list",
+  },
+  {
+    startsWith: "MCP server '",
+    includes: "' has inline secret-like env value for '",
+    endsWith: "'",
+    summary:
+      "Will replace inline secret with env variable (env must be set first)",
+  },
+  {
+    startsWith: "MCP server '",
+    includes: "' has inline secret-like argument '",
+    endsWith: "'",
+    summary:
+      "Will replace secret argument with env variable (env must be set first)",
+  },
+  {
+    startsWith: "Skipped managed Codex MCP '",
+    includes: "' because unmanaged entry already exists in ",
+    summary: "Will remove duplicate unmanaged Codex entry",
+  },
+  {
+    startsWith: "Skipped project MCP target ",
+    endsWith: " because file does not exist",
+    summary: "Will create missing project MCP file",
+  },
+];
+
+function matchesWarningPattern(
+  warning: string,
+  pattern: WarningFixPattern,
+): boolean {
+  if (!warning.startsWith(pattern.startsWith)) return false;
+  if (pattern.includes !== undefined && !warning.includes(pattern.includes))
+    return false;
+  if (pattern.endsWith !== undefined && !warning.endsWith(pattern.endsWith))
+    return false;
+  return true;
+}
+
 export function syncWarningFixSummary(warning: string): string | null {
-  if (warning.startsWith("Broken unmanaged Claude MCP '")) {
-    return "Will remove broken unmanaged Claude entry";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes(" exists in ") &&
-    warning.endsWith(" but is unmanaged in central catalog")
-  ) {
-    return "Will add server to managed MCP list";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes("' has inline secret-like env value for '") &&
-    warning.endsWith("'")
-  ) {
-    return "Will replace inline secret with env variable (env must be set first)";
-  }
-  if (
-    warning.startsWith("MCP server '") &&
-    warning.includes("' has inline secret-like argument '") &&
-    warning.endsWith("'")
-  ) {
-    return "Will replace secret argument with env variable (env must be set first)";
-  }
-  if (
-    warning.startsWith("Skipped managed Codex MCP '") &&
-    warning.includes("' because unmanaged entry already exists in ")
-  ) {
-    return "Will remove duplicate unmanaged Codex entry";
-  }
-  if (
-    warning.startsWith("Skipped project MCP target ") &&
-    warning.endsWith(" because file does not exist")
-  ) {
-    return "Will create missing project MCP file";
-  }
-  return null;
+  const match = WARNING_FIX_PATTERNS.find((pattern) =>
+    matchesWarningPattern(warning, pattern),
+  );
+  return match?.summary ?? null;
 }
 
 export function isFixableSyncWarning(warning: string): boolean {

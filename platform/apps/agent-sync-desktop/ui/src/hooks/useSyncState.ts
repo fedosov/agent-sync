@@ -83,6 +83,35 @@ function pickAgentEntryId(
   return pickPreferred(entries, preferredId, previousId, (e) => e.id);
 }
 
+type FallbackResult = {
+  state: SyncState;
+  subagents: SubagentRecord[];
+  agentsReport: AgentsContextReport | null;
+};
+
+async function loadStateWithFallback(): Promise<FallbackResult> {
+  const [fallbackState, fallbackSubagents, fallbackReport] =
+    await Promise.allSettled([
+      getState(),
+      listSubagents("all"),
+      getAgentsContextReport(),
+    ]);
+
+  if (fallbackState.status === "rejected") {
+    throw fallbackState.reason;
+  }
+  if (fallbackSubagents.status === "rejected") {
+    throw fallbackSubagents.reason;
+  }
+
+  return {
+    state: fallbackState.value,
+    subagents: fallbackSubagents.value,
+    agentsReport:
+      fallbackReport.status === "fulfilled" ? fallbackReport.value : null,
+  };
+}
+
 export function useSyncState(): UseSyncStateResult {
   const [state, setState] = useState<SyncState | null>(null);
   const [runtimeControls, setRuntimeControls] =
@@ -214,30 +243,16 @@ export function useSyncState(): UseSyncStateResult {
         setError(errorMessage(invokeError));
 
         try {
-          const [fallbackState, fallbackSubagents, fallbackReport] =
-            await Promise.allSettled([
-              getState(),
-              listSubagents("all"),
-              getAgentsContextReport(),
-            ]);
+          const fallback = await loadStateWithFallback();
 
           if (requestId !== refreshTokenRef.current) {
             return null;
           }
 
-          if (fallbackState.status === "rejected") {
-            throw fallbackState.reason;
-          }
-          if (fallbackSubagents.status === "rejected") {
-            throw fallbackSubagents.reason;
-          }
-
-          applySubagents(fallbackSubagents.value, preferredSubagentId);
-          applyAgentsReport(
-            fallbackReport.status === "fulfilled" ? fallbackReport.value : null,
-          );
-          applyState(fallbackState.value, preferredSkillKey);
-          return fallbackState.value;
+          applySubagents(fallback.subagents, preferredSubagentId);
+          applyAgentsReport(fallback.agentsReport);
+          applyState(fallback.state, preferredSkillKey);
+          return fallback.state;
         } catch (fallbackError) {
           if (requestId !== refreshTokenRef.current) {
             return null;

@@ -126,9 +126,7 @@ export function AppHeader({
               type="button"
               role="switch"
               aria-label="Allow filesystem changes"
-              aria-checked={
-                runtimeControls?.allow_filesystem_changes ?? false
-              }
+              aria-checked={runtimeControls?.allow_filesystem_changes ?? false}
               disabled={busy}
               onClick={() =>
                 onAllowToggle(

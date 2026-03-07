@@ -13,6 +13,8 @@ import { SkillDetailsPanel } from "./components/details/SkillDetailsPanel";
 import { SubagentDetailsPanel } from "./components/details/SubagentDetailsPanel";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { useCatalogActions } from "./hooks/useCatalogActions";
+import { useCatalogCounts } from "./hooks/useCatalogCounts";
 import { useSkillDetails } from "./hooks/useSkillDetails";
 import { useEntityDetails } from "./hooks/useEntityDetails";
 import { useFavorites } from "./hooks/useFavorites";
@@ -21,7 +23,6 @@ import { useDotagentsVerification } from "./hooks/useDotagentsVerification";
 import { useSyncWarnings } from "./hooks/useSyncWarnings";
 import { useAppMenuState } from "./hooks/useAppMenuState";
 import {
-  subagentStatus,
   mcpStatus,
   readStoredFocusKind,
   mcpTarget,
@@ -32,25 +33,9 @@ import {
   CATALOG_FOCUS_STORAGE_KEY,
 } from "./lib/catalogUtils";
 import { cn, errorMessage } from "./lib/utils";
-import {
-  deleteUnmanagedMcp,
-  getSubagentDetails,
-  mutateCatalogItem,
-  mutateSkill,
-  openSubagentPath,
-  openSkillPath,
-  renameSkill,
-  setAllowFilesystemChanges,
-  setSkillStarred,
-  setMcpServerEnabled,
-} from "./tauriApi";
+import { getSubagentDetails } from "./tauriApi";
 import { sortAndFilterSkills } from "./skillUtils";
-import type {
-  CatalogMutationRequest,
-  FocusKind,
-  McpServerRecord,
-  MutationCommand,
-} from "./types";
+import type { FocusKind } from "./types";
 
 type CatalogProjectGroupState = Record<
   FocusKind,
@@ -268,135 +253,29 @@ export function App() {
       .slice(0, 8);
   }, [selectedAgentEntry]);
 
-  async function handleToggleSkillStar(skillId: string) {
-    const isCurrentlyStarred = starredSkillSet.has(skillId);
-    await runAppAction(
-      async () => {
-        const next = await setSkillStarred(skillId, !isCurrentlyStarred);
-        setStarredSkillIds(next);
-      },
-      { skipIfBusy: true, withBusy: false },
-    );
-  }
-
-  async function handleAllowToggle(allow: boolean) {
-    await runAppAction(
-      async () => {
-        const next = await setAllowFilesystemChanges(allow);
-        setRuntimeControls(next);
-        await refreshState({
-          preferredSkillKey: selectedSkillKey,
-          withBusy: false,
-        });
-      },
-      {
-        onError: async (message) => {
-          setError(message);
-          await loadRuntimeControls();
-        },
-        skipIfBusy: true,
-      },
-    );
-  }
-
-  async function executeSkillMutation(
-    command: MutationCommand,
-    skillKey: string,
-  ) {
-    await runAppAction(
-      async () => {
-        const next = await mutateSkill(command, skillKey);
-        applyState(next, skillKey);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function executeCatalogMutation(
-    request: CatalogMutationRequest,
-    preferredSkillKey?: string | null,
-  ) {
-    await runAppAction(
-      async () => {
-        const next = await mutateCatalogItem(request);
-        applySubagents(next.subagents);
-        applyState(next, preferredSkillKey ?? selectedSkillKey);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function handleRenameSkill(skillKey: string, rawTitle: string) {
-    const newTitle = rawTitle.trim();
-    if (!newTitle) {
-      setError("Rename failed: title cannot be empty.");
-      return;
-    }
-
-    await runAppAction(
-      async () => {
-        const result = await renameSkill(skillKey, newTitle);
-        applyState(result.state, result.renamed_skill_key);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function handleOpenSkillPath(
-    skillKey: string,
-    target: "folder" | "file",
-  ) {
-    setOpenTargetMenu(null);
-    await runAppAction(
-      async () => {
-        await openSkillPath(skillKey, target);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function handleOpenSubagentPath(
-    subagentId: string,
-    target: "folder" | "file",
-  ) {
-    setOpenTargetMenu(null);
-    await runAppAction(
-      async () => {
-        await openSubagentPath(subagentId, target);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function handleSetMcpEnabled(
-    server: McpServerRecord,
-    agent: "codex" | "claude",
-    enabled: boolean,
-  ) {
-    await runAppAction(
-      async () => {
-        const next = await setMcpServerEnabled(
-          server.server_key,
-          agent,
-          enabled,
-          server.scope,
-          server.workspace,
-        );
-        applyState(next, selectedSkillKey);
-      },
-      { skipIfBusy: true },
-    );
-  }
-
-  async function handleDeleteUnmanagedMcp(serverKey: string) {
-    await runAppAction(
-      async () => {
-        const next = await deleteUnmanagedMcp(serverKey);
-        applyState(next, selectedSkillKey);
-      },
-      { skipIfBusy: true },
-    );
-  }
+  const {
+    handleToggleSkillStar,
+    handleAllowToggle,
+    executeSkillMutation,
+    executeCatalogMutation,
+    handleRenameSkill,
+    handleOpenSkillPath,
+    handleOpenSubagentPath,
+    handleSetMcpEnabled,
+    handleDeleteUnmanagedMcp,
+  } = useCatalogActions({
+    runAppAction,
+    selectedSkillKey,
+    starredSkillSet,
+    setStarredSkillIds,
+    setRuntimeControls,
+    setError,
+    setOpenTargetMenu,
+    loadRuntimeControls,
+    refreshState,
+    applyState,
+    applySubagents,
+  });
 
   async function copyPath(path: string, errorLabel: string) {
     try {
@@ -437,45 +316,29 @@ export function App() {
     }));
   }
 
-  const activeSkillCount =
-    state?.skills.filter((skill) => skill.status === "active").length ?? 0;
-  const archivedSkillCount =
-    state?.skills.filter((skill) => skill.status === "archived").length ?? 0;
-  const activeSubagentCount = subagents.filter(
-    (subagent) => subagentStatus(subagent) === "active",
-  ).length;
-  const archivedSubagentCount = subagents.length - activeSubagentCount;
-  const activeMcpCount = (state?.mcp_servers ?? []).filter(
-    (server) => mcpStatus(server) === "active",
-  ).length;
-  const archivedMcpCount = (state?.mcp_servers ?? []).filter(
-    (server) => mcpStatus(server) === "archived",
-  ).length;
-  const mcpCount = state?.mcp_servers?.length ?? state?.summary.mcp_count ?? 0;
-  const agentContextCount = agentsReport?.entries.length ?? 0;
-  const catalogTabCounts = {
-    skills: state?.skills.length ?? 0,
-    subagents: subagents.length,
-    mcp: mcpCount,
-    agents: agentContextCount,
-  };
-  const CATALOG_META: Record<FocusKind, { title: string; emptyText: string }> =
-    {
-      skills: { title: "Skills", emptyText: "No skills found." },
-      subagents: { title: "Subagents", emptyText: "No subagents found." },
-      mcp: { title: "MCP", emptyText: "No MCP servers found." },
-      agents: { title: "Agents.md", emptyText: "No AGENTS.md entries found." },
-    };
-  const activeCatalogTitle = CATALOG_META[focusKind].title;
-  const activeCatalogEmptyText = CATALOG_META[focusKind].emptyText;
-  const catalogFilteredCounts: Record<FocusKind, number> = {
-    skills: filteredSkills.length,
-    subagents: filteredSubagents.length,
-    mcp: filteredMcpServers.length,
-    agents: filteredAgentEntries.length,
-  };
-  const activeCatalogCount = catalogFilteredCounts[focusKind];
-  const activeCatalogTotal = catalogTabCounts[focusKind];
+  const {
+    activeSkillCount,
+    archivedSkillCount,
+    activeSubagentCount,
+    archivedSubagentCount,
+    activeMcpCount,
+    archivedMcpCount,
+    agentContextCount,
+    catalogTabCounts,
+    activeCatalogTitle,
+    activeCatalogEmptyText,
+    activeCatalogCount,
+    activeCatalogTotal,
+  } = useCatalogCounts({
+    state,
+    subagents,
+    agentsReport,
+    focusKind,
+    filteredSkills,
+    filteredSubagents,
+    filteredMcpServers,
+    filteredAgentEntries,
+  });
 
   const showSkill = focusKind === "skills" && details;
   const showSubagent = focusKind === "subagents" && subagentDetails;
@@ -528,7 +391,9 @@ export function App() {
         <SyncWarningsBanner
           syncWarnings={syncWarnings}
           syncWarningsExpanded={syncWarningsExpanded}
-          onToggleExpanded={() => setSyncWarningsExpanded((current) => !current)}
+          onToggleExpanded={() =>
+            setSyncWarningsExpanded((current) => !current)
+          }
           fixingSyncWarning={fixingSyncWarning}
           busy={busy}
           runtimeControls={runtimeControls}
