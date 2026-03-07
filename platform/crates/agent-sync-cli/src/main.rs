@@ -103,213 +103,244 @@ fn main() -> Result<()> {
     let engine = SyncEngine::current();
 
     match cli.command {
-        Commands::Sync { scope, json } => {
-            let scope = parse_scope(&scope)?;
-            engine.run_dotagents_sync(scope)?;
-            engine.run_dotagents_install_frozen(scope)?;
-            let skills = engine.list_dotagents_skills(scope)?;
-            let mcp = engine.list_dotagents_mcp(scope)?;
-
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "scope": scope_label(scope),
-                        "skills": skills,
-                        "mcp_servers": mcp,
-                    }))?
-                );
-            } else {
-                println!(
-                    "strict-sync ok scope={} skills={} mcp={}",
-                    scope_label(scope),
-                    skills.len(),
-                    mcp.len()
-                );
-            }
-        }
+        Commands::Sync { scope, json } => handle_sync(&engine, &scope, json),
         Commands::Watch {
             scope,
             interval_seconds,
-        } => {
-            let scope = parse_scope(&scope)?;
-            let interval = Duration::from_secs(interval_seconds.max(1));
-            println!(
-                "watching strict dotagents sync, scope={}, interval={}s",
-                scope_label(scope),
-                interval.as_secs()
-            );
-            loop {
-                match run_sync_iteration(&engine, scope) {
-                    Ok((skills, mcp)) => {
-                        println!(
-                            "strict-sync ok scope={} skills={} mcp={}",
-                            scope_label(scope),
-                            skills,
-                            mcp
-                        );
-                    }
-                    Err(error) => {
-                        eprintln!("strict-sync failed: {error}");
-                    }
-                }
-                std::thread::sleep(interval);
-            }
-        }
-        Commands::Skills { command } => match command {
-            SkillsCommands::Install { scope } => {
-                let scope = parse_scope(&scope)?;
-                engine.run_dotagents_install_frozen(scope)?;
-                println!("skills install completed for scope={}", scope_label(scope));
-            }
-            SkillsCommands::List { scope, json } => {
-                let scope = parse_scope(&scope)?;
-                let skills = engine.list_dotagents_skills(scope)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&skills)?);
-                } else {
-                    for skill in skills {
-                        println!(
-                            "{}\t{}\t{}\t{}",
-                            skill.skill_key,
-                            skill.scope,
-                            skill
-                                .install_status
-                                .unwrap_or_else(|| String::from("unknown")),
-                            skill.canonical_source_path
-                        );
-                    }
-                }
-            }
-            SkillsCommands::Add { package, scope } => {
-                let scope = parse_scope(&scope)?;
-                engine.run_dotagents_command(scope, &["add", package.as_str()])?;
-                println!("skills add completed for scope={}", scope_label(scope));
-            }
-            SkillsCommands::Remove { package, scope } => {
-                let scope = parse_scope(&scope)?;
-                engine.run_dotagents_command(scope, &["remove", package.as_str()])?;
-                println!("skills remove completed for scope={}", scope_label(scope));
-            }
-            SkillsCommands::Update { package, scope } => {
-                let scope = parse_scope(&scope)?;
-                let mut args = vec![String::from("update")];
-                if let Some(pkg) = package {
-                    args.push(pkg);
-                }
-                let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-                engine.run_dotagents_command(scope, &refs)?;
-                println!("skills update completed for scope={}", scope_label(scope));
-            }
-        },
-        Commands::Mcp { command } => match command {
-            McpCommands::List { scope, json } => {
-                let scope = parse_scope(&scope)?;
-                let servers = engine.list_dotagents_mcp(scope)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&servers)?);
-                } else {
-                    for server in servers {
-                        println!(
-                            "{}\t{}\t{}\t{}",
-                            server.server_key,
-                            server.scope,
-                            server.workspace.unwrap_or_else(|| String::from("-")),
-                            transport_label(server.transport)
-                        );
-                    }
-                }
-            }
-            McpCommands::Add { args, scope } => {
-                let scope = parse_scope(&scope)?;
-                let mut command = vec![String::from("mcp"), String::from("add")];
-                command.extend(args);
-                let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
-                engine.run_dotagents_command(scope, &refs)?;
-                println!("mcp add completed for scope={}", scope_label(scope));
-            }
-            McpCommands::Remove { args, scope } => {
-                let scope = parse_scope(&scope)?;
-                let mut command = vec![String::from("mcp"), String::from("remove")];
-                command.extend(args);
-                let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
-                engine.run_dotagents_command(scope, &refs)?;
-                println!("mcp remove completed for scope={}", scope_label(scope));
-            }
-            McpCommands::FixUnmanagedClaude { apply, json } => {
-                let report = engine.fix_unmanaged_claude_mcp(apply)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    if report.candidates.is_empty() {
-                        println!("No broken unmanaged Claude MCP entries found.");
-                    } else {
-                        println!(
-                            "Broken unmanaged Claude MCP entries: {}",
-                            report.candidates.len()
-                        );
-                        for candidate in &report.candidates {
-                            println!(
-                                "- {} [{}{}] {} :: {}",
-                                candidate.server_key,
-                                candidate.scope,
-                                candidate
-                                    .workspace
-                                    .as_deref()
-                                    .map(|workspace| format!(" @ {workspace}"))
-                                    .unwrap_or_default(),
-                                candidate.file_path,
-                                candidate.reason
-                            );
-                        }
-                    }
-                    if apply {
-                        println!(
-                            "Applied removal: removed {} entrie(s) across {} file(s).",
-                            report.removed_count,
-                            report.changed_files.len()
-                        );
-                        for path in &report.changed_files {
-                            println!("updated {}", path);
-                        }
-                    } else {
-                        println!(
-                            "Dry run only. Re-run with --apply to remove broken unmanaged entries."
-                        );
-                    }
-                    if !report.warnings.is_empty() {
-                        println!(
-                            "Additional warnings while inspecting: {}",
-                            report.warnings.len()
-                        );
-                        for warning in &report.warnings {
-                            println!("warning: {warning}");
-                        }
-                    }
-                }
-            }
-        },
-        Commands::MigrateDotagents { scope } => {
-            let scope = parse_scope(&scope)?;
-            engine.migrate_to_dotagents(scope)?;
-            println!("migration completed for scope={}", scope_label(scope));
-        }
-        Commands::Doctor => {
-            let env = engine.environment();
-            println!("home={}", env.home_directory.display());
-            println!("dev_root={}", env.dev_root.display());
-            println!("worktrees_root={}", env.worktrees_root.display());
-            println!("runtime={}", env.runtime_directory.display());
+        } => handle_watch(&engine, &scope, interval_seconds),
+        Commands::Skills { command } => handle_skills(&engine, command),
+        Commands::Mcp { command } => handle_mcp(&engine, command),
+        Commands::MigrateDotagents { scope } => handle_migrate(&engine, &scope),
+        Commands::Doctor => handle_doctor(&engine),
+    }
+}
 
-            let user_contract = resolve_user_agents_contract_path(&env.home_directory);
+fn handle_sync(engine: &SyncEngine, scope: &str, json: bool) -> Result<()> {
+    let scope = parse_scope(scope)?;
+    engine.run_dotagents_sync(scope)?;
+    engine.run_dotagents_install_frozen(scope)?;
+    let skills = engine.list_dotagents_skills(scope)?;
+    let mcp = engine.list_dotagents_mcp(scope)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "scope": scope_label(scope),
+                "skills": skills,
+                "mcp_servers": mcp,
+            }))?
+        );
+    } else {
+        println!(
+            "strict-sync ok scope={} skills={} mcp={}",
+            scope_label(scope),
+            skills.len(),
+            mcp.len()
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_watch(engine: &SyncEngine, scope: &str, interval_seconds: u64) -> Result<()> {
+    let scope = parse_scope(scope)?;
+    let interval = Duration::from_secs(interval_seconds.max(1));
+    println!(
+        "watching strict dotagents sync, scope={}, interval={}s",
+        scope_label(scope),
+        interval.as_secs()
+    );
+    loop {
+        match run_sync_iteration(engine, scope) {
+            Ok((skills, mcp)) => {
+                println!(
+                    "strict-sync ok scope={} skills={} mcp={}",
+                    scope_label(scope),
+                    skills,
+                    mcp
+                );
+            }
+            Err(error) => {
+                eprintln!("strict-sync failed: {error}");
+            }
+        }
+        std::thread::sleep(interval);
+    }
+}
+
+fn handle_skills(engine: &SyncEngine, command: SkillsCommands) -> Result<()> {
+    match command {
+        SkillsCommands::Install { scope } => {
+            let scope = parse_scope(&scope)?;
+            engine.run_dotagents_install_frozen(scope)?;
+            println!("skills install completed for scope={}", scope_label(scope));
+        }
+        SkillsCommands::List { scope, json } => {
+            let scope = parse_scope(&scope)?;
+            let skills = engine.list_dotagents_skills(scope)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&skills)?);
+            } else {
+                for skill in skills {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        skill.skill_key,
+                        skill.scope,
+                        skill
+                            .install_status
+                            .unwrap_or_else(|| String::from("unknown")),
+                        skill.canonical_source_path
+                    );
+                }
+            }
+        }
+        SkillsCommands::Add { package, scope } => {
+            let scope = parse_scope(&scope)?;
+            engine.run_dotagents_command(scope, &["add", package.as_str()])?;
+            println!("skills add completed for scope={}", scope_label(scope));
+        }
+        SkillsCommands::Remove { package, scope } => {
+            let scope = parse_scope(&scope)?;
+            engine.run_dotagents_command(scope, &["remove", package.as_str()])?;
+            println!("skills remove completed for scope={}", scope_label(scope));
+        }
+        SkillsCommands::Update { package, scope } => {
+            let scope = parse_scope(&scope)?;
+            let mut args = vec![String::from("update")];
+            if let Some(pkg) = package {
+                args.push(pkg);
+            }
+            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+            engine.run_dotagents_command(scope, &refs)?;
+            println!("skills update completed for scope={}", scope_label(scope));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_mcp(engine: &SyncEngine, command: McpCommands) -> Result<()> {
+    match command {
+        McpCommands::List { scope, json } => {
+            let scope = parse_scope(&scope)?;
+            let servers = engine.list_dotagents_mcp(scope)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&servers)?);
+            } else {
+                for server in servers {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        server.server_key,
+                        server.scope,
+                        server.workspace.unwrap_or_else(|| String::from("-")),
+                        transport_label(server.transport)
+                    );
+                }
+            }
+        }
+        McpCommands::Add { args, scope } => {
+            let scope = parse_scope(&scope)?;
+            let mut command = vec![String::from("mcp"), String::from("add")];
+            command.extend(args);
+            let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+            engine.run_dotagents_command(scope, &refs)?;
+            println!("mcp add completed for scope={}", scope_label(scope));
+        }
+        McpCommands::Remove { args, scope } => {
+            let scope = parse_scope(&scope)?;
+            let mut command = vec![String::from("mcp"), String::from("remove")];
+            command.extend(args);
+            let refs = command.iter().map(String::as_str).collect::<Vec<_>>();
+            engine.run_dotagents_command(scope, &refs)?;
+            println!("mcp remove completed for scope={}", scope_label(scope));
+        }
+        McpCommands::FixUnmanagedClaude { apply, json } => {
+            handle_fix_unmanaged_claude(engine, apply, json)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_fix_unmanaged_claude(engine: &SyncEngine, apply: bool, json: bool) -> Result<()> {
+    let report = engine.fix_unmanaged_claude_mcp(apply)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    if report.candidates.is_empty() {
+        println!("No broken unmanaged Claude MCP entries found.");
+    } else {
+        println!(
+            "Broken unmanaged Claude MCP entries: {}",
+            report.candidates.len()
+        );
+        for candidate in &report.candidates {
             println!(
-                "user_agents_toml={}",
-                user_contract
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| String::from("missing"))
+                "- {} [{}{}] {} :: {}",
+                candidate.server_key,
+                candidate.scope,
+                candidate
+                    .workspace
+                    .as_deref()
+                    .map(|workspace| format!(" @ {workspace}"))
+                    .unwrap_or_default(),
+                candidate.file_path,
+                candidate.reason
             );
         }
     }
+
+    if apply {
+        println!(
+            "Applied removal: removed {} entrie(s) across {} file(s).",
+            report.removed_count,
+            report.changed_files.len()
+        );
+        for path in &report.changed_files {
+            println!("updated {}", path);
+        }
+    } else {
+        println!("Dry run only. Re-run with --apply to remove broken unmanaged entries.");
+    }
+
+    if !report.warnings.is_empty() {
+        println!(
+            "Additional warnings while inspecting: {}",
+            report.warnings.len()
+        );
+        for warning in &report.warnings {
+            println!("warning: {warning}");
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_migrate(engine: &SyncEngine, scope: &str) -> Result<()> {
+    let scope = parse_scope(scope)?;
+    engine.migrate_to_dotagents(scope)?;
+    println!("migration completed for scope={}", scope_label(scope));
+    Ok(())
+}
+
+fn handle_doctor(engine: &SyncEngine) -> Result<()> {
+    let env = engine.environment();
+    println!("home={}", env.home_directory.display());
+    println!("dev_root={}", env.dev_root.display());
+    println!("worktrees_root={}", env.worktrees_root.display());
+    println!("runtime={}", env.runtime_directory.display());
+
+    let user_contract = resolve_user_agents_contract_path(&env.home_directory);
+    println!(
+        "user_agents_toml={}",
+        user_contract
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| String::from("missing"))
+    );
 
     Ok(())
 }
