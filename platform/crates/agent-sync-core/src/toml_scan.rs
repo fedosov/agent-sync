@@ -4,6 +4,12 @@ enum MultilineStringState {
     Literal,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct McpServerHeader {
+    key: String,
+    is_subtable: bool,
+}
+
 pub(crate) fn toml_line_outside_multiline_flags(content: &str) -> Vec<bool> {
     let mut state = None;
     let mut flags = Vec::new();
@@ -30,6 +36,15 @@ pub(crate) fn scan_toml_mcp_server_keys(content: &str) -> Vec<String> {
 }
 
 pub(crate) fn extract_mcp_server_key(line: &str) -> Option<String> {
+    let header = parse_mcp_server_header(line)?;
+    (!header.is_subtable).then_some(header.key)
+}
+
+pub(crate) fn line_matches_mcp_server_subtable(line: &str, key: &str) -> bool {
+    parse_mcp_server_header(line).is_some_and(|header| header.is_subtable && header.key == key)
+}
+
+fn parse_mcp_server_header(line: &str) -> Option<McpServerHeader> {
     let sanitized = strip_toml_inline_comment(line);
     let trimmed = sanitized.trim();
     let inner = trimmed.strip_prefix('[')?.strip_suffix(']')?;
@@ -42,7 +57,22 @@ pub(crate) fn extract_mcp_server_key(line: &str) -> Option<String> {
     }
     let (key, value) = root.iter().next()?;
     let server_table = value.as_table()?;
-    server_table.contains_key(probe_key).then(|| key.clone())
+    value_contains_probe_key(value, probe_key).then(|| McpServerHeader {
+        key: key.clone(),
+        is_subtable: !server_table.contains_key(probe_key),
+    })
+}
+
+fn value_contains_probe_key(value: &toml::Value, probe_key: &str) -> bool {
+    match value {
+        toml::Value::Table(table) => {
+            table.contains_key(probe_key)
+                || table
+                    .values()
+                    .any(|nested_value| value_contains_probe_key(nested_value, probe_key))
+        }
+        _ => false,
+    }
 }
 
 fn multiline_state_after_line(
@@ -168,7 +198,9 @@ fn strip_toml_inline_comment(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_mcp_server_key, scan_toml_mcp_server_keys};
+    use super::{
+        extract_mcp_server_key, line_matches_mcp_server_subtable, scan_toml_mcp_server_keys,
+    };
 
     #[test]
     fn scan_toml_mcp_server_keys_ignores_multiline_string_content() {
@@ -212,5 +244,21 @@ command = "npx"
     fn extract_mcp_server_key_rejects_subtables_with_legal_header_whitespace() {
         assert_eq!(extract_mcp_server_key("[ mcp_servers.exa.env ]"), None);
         assert_eq!(extract_mcp_server_key("[mcp_servers . exa . env]"), None);
+    }
+
+    #[test]
+    fn line_matches_mcp_server_subtable_supports_legal_header_whitespace() {
+        assert!(line_matches_mcp_server_subtable(
+            "[ mcp_servers.exa . env ]",
+            "exa"
+        ));
+        assert!(line_matches_mcp_server_subtable(
+            r#"[ mcp_servers . "exa prod" . env ]"#,
+            "exa prod"
+        ));
+        assert!(!line_matches_mcp_server_subtable(
+            "[mcp_servers.exa]",
+            "exa"
+        ));
     }
 }

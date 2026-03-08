@@ -3,7 +3,9 @@ use crate::managed_block::{strip_managed_blocks, upsert_managed_block};
 use crate::models::{
     CatalogMutationAction, McpEnabledByAgent, McpServerRecord, McpTransport, SkillLifecycleStatus,
 };
-use crate::toml_scan::{scan_toml_mcp_server_keys, toml_line_outside_multiline_flags};
+use crate::toml_scan::{
+    line_matches_mcp_server_subtable, scan_toml_mcp_server_keys, toml_line_outside_multiline_flags,
+};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -3350,15 +3352,6 @@ fn extract_mcp_server_key(line: &str) -> Option<String> {
     crate::toml_scan::extract_mcp_server_key(line)
 }
 
-/// Returns all text prefixes for sub-sections of `[mcp_servers.{key}.*]`.
-fn codex_server_sub_prefixes(key: &str) -> Vec<String> {
-    vec![
-        format!("[mcp_servers.{}.", key),
-        format!("[mcp_servers.\"{}\".", key),
-        format!("[mcp_servers.'{}\'.", key),
-    ]
-}
-
 /// Checks if `[mcp_servers.{key}]` header exists in raw TOML text.
 /// Used as a fallback when structured TOML parsing fails.
 fn text_contains_codex_server(text: &str, key: &str) -> bool {
@@ -3403,7 +3396,6 @@ fn line_matches_codex_server_header(line: &str, key: &str) -> bool {
 /// Removes `[mcp_servers.{key}]` section (and its sub-sections like `.env`)
 /// from raw TOML text, preserving all comments and other content.
 fn text_remove_codex_server_section(text: &str, key: &str) -> String {
-    let sub_prefixes = codex_server_sub_prefixes(key);
     let outside_multiline_flags = toml_line_outside_multiline_flags(text);
     let mut result = Vec::new();
     let mut skipping = false;
@@ -3413,14 +3405,14 @@ fn text_remove_codex_server_section(text: &str, key: &str) -> String {
         if skipping {
             if outside_multiline
                 && trimmed.starts_with('[')
-                && !sub_prefixes.iter().any(|p| trimmed.starts_with(p.as_str()))
+                && !line_matches_mcp_server_subtable(line, key)
             {
                 skipping = false;
                 result.push(line);
             }
         } else if outside_multiline
             && (line_matches_codex_server_header(line, key)
-                || sub_prefixes.iter().any(|p| trimmed.starts_with(p.as_str())))
+                || line_matches_mcp_server_subtable(line, key))
         {
             skipping = true;
         } else {
@@ -3434,7 +3426,6 @@ fn text_remove_codex_server_section(text: &str, key: &str) -> String {
 /// Removes duplicate unmanaged `[mcp_servers.{key}]` sections, keeping the first
 /// occurrence and preserving unrelated content and sub-sections.
 fn text_deduplicate_unmanaged_codex_server_sections(text: &str, key: &str) -> String {
-    let sub_prefixes = codex_server_sub_prefixes(key);
     let lines: Vec<&str> = text.lines().collect();
     let outside_multiline_flags = toml_line_outside_multiline_flags(text);
     let mut skip = vec![false; lines.len()];
@@ -3459,11 +3450,7 @@ fn text_deduplicate_unmanaged_codex_server_sections(text: &str, key: &str) -> St
                 continue;
             }
             let next = lines[index].trim();
-            if next.starts_with('[')
-                && !sub_prefixes
-                    .iter()
-                    .any(|prefix| next.starts_with(prefix.as_str()))
-            {
+            if next.starts_with('[') && !line_matches_mcp_server_subtable(lines[index], key) {
                 break;
             }
             index += 1;
@@ -4235,6 +4222,33 @@ command = \"bar-cmd\"\n";
         assert!(
             result.contains("bar-cmd"),
             "bar content should be preserved"
+        );
+    }
+
+    #[test]
+    fn text_remove_codex_server_section_removes_whitespace_formatted_subtables() {
+        let input = "\
+[ mcp_servers.foo ]\n\
+command = \"foo-cmd\"\n\
+\n\
+[ mcp_servers.foo . env ]\n\
+API_KEY = \"secret\"\n\
+\n\
+[mcp_servers.bar]\n\
+command = \"bar-cmd\"\n";
+
+        let result = text_remove_codex_server_section(input, "foo");
+        assert!(
+            !result.contains("[ mcp_servers.foo ]"),
+            "foo section should be removed"
+        );
+        assert!(
+            !result.contains("[ mcp_servers.foo . env ]"),
+            "whitespace-formatted foo.env sub-section should be removed"
+        );
+        assert!(
+            result.contains("[mcp_servers.bar]"),
+            "bar section should be preserved"
         );
     }
 

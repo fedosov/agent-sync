@@ -1,13 +1,18 @@
 use crate::models::{ConfigFormat, ConfigValidationResult};
 use crate::toml_scan::scan_toml_mcp_server_keys;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const INVALID_JSON_ROOT_WARNING: &str =
+    "JSON root must be an object; non-object value will be ignored";
 const INVALID_MCP_SERVERS_WARNING: &str =
     "'mcpServers' must be a JSON object; non-object value will be ignored";
+const INVALID_PROJECTS_WARNING: &str =
+    "'projects' must be a JSON object; non-object value will be ignored";
 
 /// Validate Codex `~/.codex/config.toml` for syntax and duplicate MCP keys.
 pub fn validate_codex_config(home: &Path) -> Option<ConfigValidationResult> {
@@ -86,7 +91,9 @@ fn validate_json_config_path(path: PathBuf) -> Option<ConfigValidationResult> {
     match scan_json_duplicate_mcp_keys(&content) {
         Ok(validation) => {
             result.duplicate_keys = validation.duplicate_keys;
-            result.warnings = validation.warnings;
+            let mut warnings = validation.warnings.into_iter().collect::<BTreeSet<_>>();
+            warnings.extend(scan_json_structure_warnings(&content));
+            result.warnings = warnings.into_iter().collect();
         }
         Err(e) => {
             result.valid_syntax = false;
@@ -375,6 +382,36 @@ struct JsonMcpValidation {
     warnings: Vec<String>,
 }
 
+fn scan_json_structure_warnings(content: &str) -> BTreeSet<String> {
+    let mut warnings = BTreeSet::new();
+    let Ok(root) = serde_json::from_str::<JsonValue>(content) else {
+        return warnings;
+    };
+
+    let Some(root_object) = root.as_object() else {
+        warnings.insert(String::from(INVALID_JSON_ROOT_WARNING));
+        return warnings;
+    };
+
+    let Some(projects_value) = root_object.get("projects") else {
+        return warnings;
+    };
+    let Some(projects) = projects_value.as_object() else {
+        warnings.insert(String::from(INVALID_PROJECTS_WARNING));
+        return warnings;
+    };
+
+    for (workspace, project_value) in projects {
+        if !project_value.is_object() {
+            warnings.insert(format!(
+                "Project entry '{workspace}' must be a JSON object; non-object value will be ignored"
+            ));
+        }
+    }
+
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +697,57 @@ url = "http://localhost:1234"
             result.warnings,
             vec![String::from(
                 "'mcpServers' must be a JSON object; non-object value will be ignored"
+            )]
+        );
+    }
+
+    #[test]
+    fn validate_claude_warns_when_root_is_not_an_object() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        fs::write(home.join(".claude.json"), r#"[]"#).unwrap();
+
+        let result = validate_claude_config(home).unwrap();
+        assert!(result.valid_syntax);
+        assert!(result.duplicate_keys.is_empty());
+        assert_eq!(
+            result.warnings,
+            vec![String::from(
+                "JSON root must be an object; non-object value will be ignored"
+            )]
+        );
+    }
+
+    #[test]
+    fn validate_claude_warns_when_projects_is_not_an_object() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        fs::write(home.join(".claude.json"), r#"{"projects":[]}"#).unwrap();
+
+        let result = validate_claude_config(home).unwrap();
+        assert!(result.valid_syntax);
+        assert!(result.duplicate_keys.is_empty());
+        assert_eq!(
+            result.warnings,
+            vec![String::from(
+                "'projects' must be a JSON object; non-object value will be ignored"
+            )]
+        );
+    }
+
+    #[test]
+    fn validate_claude_warns_when_project_entry_is_not_an_object() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        fs::write(home.join(".claude.json"), r#"{"projects":{"ws":[]}}"#).unwrap();
+
+        let result = validate_claude_config(home).unwrap();
+        assert!(result.valid_syntax);
+        assert!(result.duplicate_keys.is_empty());
+        assert_eq!(
+            result.warnings,
+            vec![String::from(
+                "Project entry 'ws' must be a JSON object; non-object value will be ignored"
             )]
         );
     }
